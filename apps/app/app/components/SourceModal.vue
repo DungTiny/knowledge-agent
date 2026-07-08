@@ -377,8 +377,9 @@ async function save() {
 
           <template v-if="form.type === 'file'">
             <div
-              class="relative rounded-lg border-2 border-dashed transition-colors p-6"
+              class="relative rounded-lg border-2 border-dashed transition-colors p-6 cursor-pointer"
               :class="isDraggingOver ? 'border-primary bg-primary/5' : 'border-default hover:border-muted'"
+              @click="fileInputRef?.click()"
               @dragover.prevent="isDraggingOver = true"
               @dragleave.prevent="isDraggingOver = false"
               @drop.prevent="onDrop"
@@ -398,7 +399,7 @@ async function save() {
                 <div>
                   <p class="text-sm font-medium text-highlighted">
                     Drop files here or
-                    <button type="button" class="text-primary hover:underline" @click="fileInputRef?.click()">
+                    <button type="button" class="text-primary hover:underline" @click.stop="fileInputRef?.click()">
                       browse
                     </button>
                   </p>

@@ -74,6 +74,7 @@ const sources = ref<ExtractedSource[]>([
   }
 ])
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const sourceFileInputRefs: Record<string, HTMLInputElement | null> = {}
 
 watch(pendingFiles, (files) => {
   if (files.length > 0 && !showQuickImport.value) {
@@ -316,6 +317,10 @@ function addSourceFiles(source: ExtractedSource, fileList: FileList | File[]) {
     ...existing,
     ...newFiles.map(file => ({ file, id: crypto.randomUUID() })),
   ]
+
+  if (!source.data.label && newFiles.length > 0) {
+    source.data.label = newFiles[0]!.name.replace(/\.[^.]+$/, '')
+  }
 }
 
 function removeSourceFile(source: ExtractedSource, fileId: string) {
@@ -621,13 +626,13 @@ const validSourcesCount = computed(() => sources.value.filter(s => s.data.label)
                 :class="[
                   isDragging ? 'border-neutral-900 bg-neutral-900/5 dark:border-white dark:bg-white/5' : 'border-default hover:border-muted hover:bg-elevated/30',
                 ]"
-                @click="($refs[`fileInput-${source.id}`] as HTMLInputElement)?.click()"
+                @click="sourceFileInputRefs[source.id]?.click()"
                 @drop.prevent="isDragging = false; addSourceFiles(source, $event.dataTransfer?.files || [])"
                 @dragover.prevent="isDragging = true"
                 @dragleave.self="isDragging = false"
               >
                 <input
-                  :ref="`fileInput-${source.id}`"
+                  :ref="(el) => { sourceFileInputRefs[source.id] = el as HTMLInputElement | null }"
                   type="file"
                   :accept="SOURCE_FILE_EXTENSIONS.join(',')"
                   multiple
