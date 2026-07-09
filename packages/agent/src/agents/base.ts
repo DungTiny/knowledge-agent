@@ -15,6 +15,7 @@ export function createAgent({
   route,
   buildPrompt,
   resolveModel,
+  getLanguageModel,
   onRouted,
   onStepFinish,
   onFinish,
@@ -39,6 +40,7 @@ export function createAgent({
         ?? agentConfig.defaultModel
         ?? DEFAULT_MODEL
       const effectiveModel = modelOverride ?? routedModel
+      const customModel = await getLanguageModel?.(effectiveModel)
 
       maxSteps = effectiveMaxSteps
       onRouted?.({ routerConfig, agentConfig, effectiveModel, effectiveMaxSteps })
@@ -54,11 +56,11 @@ export function createAgent({
 
       return {
         ...settings,
-        model: wrap(effectiveModel),
+        model: wrap(customModel ?? effectiveModel),
         instructions: buildPrompt(routerConfig, agentConfig),
         tools: { ...tools, web_search: webSearchTool },
         stopWhen: stepCountIs(effectiveMaxSteps),
-        providerOptions: buildProviderOptions(effectiveModel, resolveGatewayMetadata()),
+        providerOptions: customModel ? undefined : buildProviderOptions(effectiveModel, resolveGatewayMetadata()),
         experimental_context: executionContext,
       }
     },

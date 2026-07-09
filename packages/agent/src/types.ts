@@ -1,4 +1,5 @@
 import type { z } from 'zod'
+import type { LanguageModelV3 } from '@ai-sdk/provider'
 import type { AgentConfig } from './router/schema'
 import type { callOptionsSchema } from './core/schemas'
 
@@ -55,6 +56,12 @@ export interface CreateAgentOptions {
   route: () => Promise<AgentConfig>
   buildPrompt: (routerConfig: AgentConfig, agentConfig: AgentConfigData) => string
   resolveModel?: (routerConfig: AgentConfig, agentConfig: AgentConfigData) => string
+  /**
+   * Given a resolved model-id string, optionally return an already-built
+   * LanguageModelV3 to use instead of resolving the id via the AI Gateway.
+   * Return undefined to fall back to normal gateway string resolution.
+   */
+  getLanguageModel?: (modelId: string) => Promise<LanguageModelV3 | undefined> | LanguageModelV3 | undefined
   onRouted?: (result: RoutingResult) => void
   onStepFinish?: (stepResult: any) => void
   onFinish?: (result: any) => void

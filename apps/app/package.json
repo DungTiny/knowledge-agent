@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@ai-sdk/gateway": "^3.0.45",
+    "@ai-sdk/openai-compatible": "^2.0.56",
     "@ai-sdk/vue": "^3.0.85",
     "@better-auth/api-key": "^1.5.1",
     "@chat-adapter/discord": "^4.13.0",

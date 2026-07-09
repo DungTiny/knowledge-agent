@@ -52,6 +52,104 @@ const form = ref<{
 const isSaving = ref(false)
 const isResetting = ref(false)
 
+interface ModelProviderConfig {
+  id: string
+  label: string
+  baseUrl: string | null
+  modelId: string | null
+  enabled: boolean
+  hasApiKey: boolean
+}
+
+const cachedProviderConfig = useState<ModelProviderConfig | null>('admin-model-provider-config', () => null)
+
+const { data: providerConfig, refresh: refreshProvider } = useLazyFetch<ModelProviderConfig>('/api/model-provider')
+
+if (!providerConfig.value && cachedProviderConfig.value) {
+  providerConfig.value = cachedProviderConfig.value
+}
+watch(providerConfig, (v) => {
+  if (v) cachedProviderConfig.value = v
+})
+
+const providerForm = ref({
+  label: 'Custom Provider',
+  baseUrl: '',
+  apiKey: '', // always blank — never populated from the server
+  modelId: '',
+  enabled: false,
+})
+
+watch(providerConfig, (v) => {
+  if (v) {
+    providerForm.value = {
+      label: v.label,
+      baseUrl: v.baseUrl || '',
+      apiKey: '',
+      modelId: v.modelId || '',
+      enabled: v.enabled,
+    }
+  }
+}, { immediate: true })
+
+const isSavingProvider = ref(false)
+const isTestingProvider = ref(false)
+
+function useOpenRouterPreset() {
+  providerForm.value.baseUrl = 'https://openrouter.ai/api/v1'
+  if (!providerForm.value.label || providerForm.value.label === 'Custom Provider') {
+    providerForm.value.label = 'OpenRouter'
+  }
+}
+
+async function saveProviderConfig() {
+  isSavingProvider.value = true
+  try {
+    await $fetch('/api/model-provider', {
+      method: 'PUT',
+      body: {
+        label: providerForm.value.label,
+        baseUrl: providerForm.value.baseUrl || null,
+        apiKey: providerForm.value.apiKey || undefined,
+        modelId: providerForm.value.modelId || null,
+        enabled: providerForm.value.enabled,
+      },
+    })
+    providerForm.value.apiKey = ''
+    toast.add({
+      title: 'Model provider saved',
+      icon: 'i-lucide-check',
+    })
+    await refreshProvider()
+  } catch (e) {
+    showError(e, { fallback: 'Failed to save model provider' })
+  } finally {
+    isSavingProvider.value = false
+  }
+}
+
+async function testProviderConnection() {
+  isTestingProvider.value = true
+  try {
+    await $fetch('/api/model-provider/test', {
+      method: 'POST',
+      body: {
+        baseUrl: providerForm.value.baseUrl,
+        apiKey: providerForm.value.apiKey || undefined,
+        modelId: providerForm.value.modelId,
+      },
+    })
+    toast.add({
+      title: 'Connection successful',
+      icon: 'i-lucide-check',
+    })
+  } catch (e) {
+    showError(e, { fallback: 'Connection test failed' })
+  } finally {
+    isTestingProvider.value = false
+  }
+}
+
 watch(config, (newConfig) => {
   if (newConfig) {
     form.value = {
@@ -339,5 +437,64 @@ async function resetConfig() {
         </UButton>
       </div>
     </form>
+
+    <section class="mt-8">
+      <h2 class="text-[10px] text-muted uppercase tracking-wide mb-3 font-pixel">
+        Model Provider
+      </h2>
+      <div class="rounded-lg border border-default divide-y divide-default">
+        <div class="flex items-center justify-between gap-4 px-4 py-3">
+          <div>
+            <p class="text-sm text-highlighted">
+              Enable custom provider
+            </p>
+            <p class="text-xs text-muted">
+              Adds this provider as a selectable model in chat
+            </p>
+          </div>
+          <USwitch v-model="providerForm.enabled" />
+        </div>
+        <div class="px-4 py-3">
+          <p class="text-sm text-highlighted mb-1">
+            Label
+          </p>
+          <UInput v-model="providerForm.label" placeholder="OpenRouter" class="w-full" />
+        </div>
+        <div class="px-4 py-3">
+          <div class="flex items-center justify-between mb-1">
+            <p class="text-sm text-highlighted">
+              Base URL
+            </p>
+            <UButton size="xs" variant="soft" color="neutral" @click="useOpenRouterPreset">
+              Use OpenRouter
+            </UButton>
+          </div>
+          <UInput v-model="providerForm.baseUrl" placeholder="https://openrouter.ai/api/v1" class="w-full" />
+        </div>
+        <div class="px-4 py-3">
+          <p class="text-sm text-highlighted mb-1">
+            API key
+          </p>
+          <p class="text-xs text-muted mb-2">
+            {{ providerConfig?.hasApiKey ? 'A key is already saved. Leave blank to keep it.' : 'No key saved yet.' }}
+          </p>
+          <UInput v-model="providerForm.apiKey" type="password" placeholder="sk-..." class="w-full" />
+        </div>
+        <div class="px-4 py-3">
+          <p class="text-sm text-highlighted mb-1">
+            Model ID
+          </p>
+          <UInput v-model="providerForm.modelId" placeholder="anthropic/claude-sonnet-4.6" class="w-full" />
+        </div>
+      </div>
+      <div class="flex items-center gap-3 mt-3">
+        <UButton :loading="isSavingProvider" icon="i-lucide-save" @click="saveProviderConfig">
+          Save Provider
+        </UButton>
+        <UButton color="neutral" variant="ghost" :loading="isTestingProvider" @click="testProviderConnection">
+          Test Connection
+        </UButton>
+      </div>
+    </section>
   </div>
 </template>

@@ -78,6 +78,18 @@ export const agentConfig = pgTable('agent_config', {
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 })
 
+export const modelProviderConfig = pgTable('model_provider_config', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  label: text('label').notNull().default('Custom Provider'),
+  baseUrl: text('base_url'),
+  apiKey: text('api_key'),
+  modelId: text('model_id'),
+  enabled: boolean('enabled').notNull().default(false),
+  isActive: boolean('is_active').notNull().default(true),
+  ...timestamps,
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+})
+
 export const apiUsage = pgTable('api_usage', {
   id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
   source: text('source').notNull(), // 'github-bot', 'sdk', 'discord-bot', etc.

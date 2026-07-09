@@ -34,6 +34,7 @@ export const KV_KEYS = {
   SNAPSHOT_REPO_CONFIG: 'snapshot:repo-config',
   LAST_SOURCE_SYNC: 'sources:last-sync',
   AGENT_CONFIG_CACHE: 'agent:config-cache',
+  MODEL_PROVIDER_CONFIG_CACHE: 'model-provider:config-cache',
   session: (sessionId: string) => `session:${sessionId}`,
   ACTIVE_SANDBOX_SESSION: 'sandbox:active-session',
   rateLimit: (userId: string, date: string) => `ratelimit:${userId}:${date}`,

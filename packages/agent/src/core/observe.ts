@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import type { LanguageModelV3 } from '@ai-sdk/provider'
 
-type WrapFn = (model: string) => any
+type WrapFn = (model: string | LanguageModelV3) => LanguageModelV3
 
 export interface GatewayMetadata {
   userId?: string
@@ -28,7 +29,7 @@ export function setAIGatewayMetadata(metadata: GatewayMetadata): void {
 }
 
 export function resolveModelWrapper(): WrapFn {
-  return aiContext.getStore()?.wrap ?? ((model: string) => model)
+  return aiContext.getStore()?.wrap ?? ((model) => model as LanguageModelV3)
 }
 
 export function resolveGatewayMetadata(): GatewayMetadata {

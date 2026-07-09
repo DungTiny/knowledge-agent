@@ -50,7 +50,7 @@ export function buildProviderOptions(
   metadata?: { userId?: string, tags?: string[] },
 ): SharedV3ProviderOptions | undefined {
   const fallbacks = MODEL_FALLBACKS[model]
-  const gateway: Record<string, unknown> = {}
+  const gateway: Record<string, string | string[]> = {}
 
   if (fallbacks?.length) gateway.models = fallbacks
   if (metadata?.userId) gateway.user = metadata.userId
@@ -62,7 +62,7 @@ export function buildProviderOptions(
 export function buildGatewayProviderOptions(
   metadata?: { userId?: string, tags?: string[] },
 ): SharedV3ProviderOptions | undefined {
-  const gateway: Record<string, unknown> = {}
+  const gateway: Record<string, string | string[]> = {}
 
   if (metadata?.userId) gateway.user = metadata.userId
   if (metadata?.tags?.length) gateway.tags = metadata.tags

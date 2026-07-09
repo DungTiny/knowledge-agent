@@ -1,5 +1,5 @@
 <script setup lang="ts">
-const { model, models, formatModelName } = useModels()
+const { model, models, formatModelName, customModelLabel } = useModels()
 
 const providerIcons: Record<string, string> = {
   openai: 'i-simple-icons-openai',
@@ -13,8 +13,12 @@ function getProviderIcon(modelId: string) {
   return providerIcons[provider] || 'i-custom-bot'
 }
 
-const items = computed(() => models.map(m => ({
-  label: formatModelName(m),
+function getModelLabel(modelId: string) {
+  return modelId === 'custom' ? customModelLabel.value : formatModelName(modelId)
+}
+
+const items = computed(() => models.value.map(m => ({
+  label: getModelLabel(m),
   value: m,
   icon: getProviderIcon(m)
 })))

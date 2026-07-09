@@ -5,12 +5,16 @@ import { kv } from '@nuxthub/kv'
 import { and, eq } from 'drizzle-orm'
 import { createSavoir } from '@savoir/sdk'
 import { useLogger } from 'evlog'
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import type { LanguageModelV3 } from '@ai-sdk/provider'
 import { createSourceAgent, createAdminAgent, setAIGatewayMetadata } from '@savoir/agent'
 import { generateTitle } from '../../utils/chat/generate-title'
 import { getAgentConfig } from '../../utils/agent-config'
+import { getModelProviderConfig, isModelProviderConfigured } from '../../utils/model-provider'
 import { KV_KEYS } from '../../utils/sandbox/types'
 import { adminTools } from '../../utils/chat/admin-tools'
 import { checkRateLimit, incrementRateLimit } from '../../utils/rate-limit'
+import { CUSTOM_MODEL_ID } from '#shared/utils/model-provider'
 
 defineRouteMeta({
   openAPI: {
@@ -18,6 +22,14 @@ defineRouteMeta({
     tags: ['ai'],
   },
 })
+
+async function resolveCustomLanguageModel(modelId: string): Promise<LanguageModelV3 | undefined> {
+  if (modelId !== CUSTOM_MODEL_ID) return undefined
+  const config = await getModelProviderConfig()
+  if (!isModelProviderConfigured(config)) return undefined
+  const provider = createOpenAICompatible({ baseURL: config.baseUrl!, apiKey: config.apiKey!, name: 'custom' })
+  return provider.chatModel(config.modelId!)
+}
 
 export default defineEventHandler(async (event) => {
   const requestLog = useLogger(event)
@@ -100,6 +112,7 @@ export default defineEventHandler(async (event) => {
     const agent = isAdminChat
       ? createAdminAgent({
         tools: adminTools,
+        getLanguageModel: resolveCustomLanguageModel,
       })
       : createSourceAgent({
         tools: savoir.tools,
@@ -107,6 +120,7 @@ export default defineEventHandler(async (event) => {
         messages,
         defaultModel: model,
         requestId,
+        getLanguageModel: resolveCustomLanguageModel,
         onRouted: ({ routerConfig, agentConfig, effectiveModel: routedModel, effectiveMaxSteps }) => {
           effectiveModel = routedModel
           requestLog.set({

@@ -1,5 +1,6 @@
 import { stepCountIs, ToolLoopAgent, type StepResult, type ToolSet, type UIMessage } from 'ai'
 import { log } from 'evlog'
+import type { LanguageModelV3 } from '@ai-sdk/provider'
 import { DEFAULT_MODEL, buildProviderOptions } from '../router/schema'
 import { routeQuestion } from '../router/route-question'
 import { buildChatSystemPrompt } from '../prompts/chat'
@@ -21,6 +22,11 @@ export interface SourceAgentOptions {
   requestId?: string
   /** Falls back to agentConfig.defaultModel then DEFAULT_MODEL */
   defaultModel?: string
+  /**
+   * Given a resolved model-id string, optionally return an already-built
+   * LanguageModelV3 to use instead of resolving the id via the AI Gateway.
+   */
+  getLanguageModel?: (modelId: string) => Promise<LanguageModelV3 | undefined> | LanguageModelV3 | undefined
   onRouted?: (result: RoutingResult) => void
    
   onStepFinish?: (stepResult: any) => void
@@ -35,6 +41,7 @@ export function createSourceAgent({
   apiKey,
   requestId,
   defaultModel = DEFAULT_MODEL,
+  getLanguageModel,
   onRouted,
   onStepFinish,
   onFinish,
@@ -57,6 +64,7 @@ export function createSourceAgent({
 
       const effectiveMaxSteps = Math.round(routerConfig.maxSteps * agentConfig.maxStepsMultiplier)
       const effectiveModel = modelOverride ?? agentConfig.defaultModel ?? defaultModel
+      const customModel = await getLanguageModel?.(effectiveModel)
 
       maxSteps = effectiveMaxSteps
       onRouted?.({ routerConfig, agentConfig, effectiveModel, effectiveMaxSteps })
@@ -72,11 +80,11 @@ export function createSourceAgent({
 
       return {
         ...settings,
-        model: wrap(effectiveModel),
+        model: wrap(customModel ?? effectiveModel),
         instructions: applyComplexity(buildChatSystemPrompt(agentConfig), routerConfig),
         tools: { ...tools, web_search: webSearchTool },
         stopWhen: stepCountIs(effectiveMaxSteps),
-        providerOptions: buildProviderOptions(effectiveModel, resolveGatewayMetadata()),
+        providerOptions: customModel ? undefined : buildProviderOptions(effectiveModel, resolveGatewayMetadata()),
         experimental_context: executionContext,
       }
     },
