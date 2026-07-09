@@ -52,33 +52,6 @@ async function onSubmit() {
   clearFiles()
 }
 
-const chatQuickChats = [
-  {
-    label: 'How do I use unstorage with NuxtHub KV?',
-    icon: 'i-logos-nuxt-icon'
-  },
-  {
-    label: 'What are Nitro tasks and how do I use them?',
-    icon: 'i-custom-nitro'
-  },
-  {
-    label: 'How do I build a multi-step agent with ToolLoopAgent?',
-    icon: 'i-lucide-bot'
-  },
-  {
-    label: 'How do I use streamText with tool calling?',
-    icon: 'i-lucide-sparkles'
-  },
-  {
-    label: 'How do I configure model fallbacks with AI Gateway?',
-    icon: 'i-lucide-shuffle'
-  },
-  {
-    label: 'How do I build a Discord bot with the chat SDK?',
-    icon: 'i-simple-icons-discord'
-  }
-]
-
 const adminQuickChats = [
   {
     label: 'Chart the daily token usage by model over the last 30 days',
@@ -106,7 +79,7 @@ const adminQuickChats = [
   }
 ]
 
-const quickChats = computed(() => mode.value === 'admin' ? adminQuickChats : chatQuickChats)
+const quickChats = computed(() => mode.value === 'admin' ? adminQuickChats : [])
 </script>
 
 <template>
@@ -119,7 +92,7 @@ const quickChats = computed(() => mode.value === 'admin' ? adminQuickChats : cha
       <DragDropOverlay :show="isDragging" />
       <UContainer ref="dropzoneRef" class="flex-1 flex flex-col justify-center gap-4 sm:gap-6 py-8">
         <h1 class="text-3xl sm:text-4xl text-highlighted font-semibold tracking-wide">
-          How can I help you today?
+          Chào Mộc Trà!
         </h1>
 
         <UChatPrompt
