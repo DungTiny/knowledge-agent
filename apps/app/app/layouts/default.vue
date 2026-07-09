@@ -93,15 +93,15 @@ const adminNavigation = [
     { label: 'API Keys', icon: 'i-custom-api-access', to: '/admin/api-keys' },
     { label: 'Users', icon: 'i-custom-users', to: '/admin/users' },
   ],
-  [
-    { label: 'Documentation', type: 'label' as const },
-    { label: 'Getting Started', icon: 'i-lucide-rocket', to: '/admin/docs/getting-started' },
-    { label: 'API Keys', icon: 'i-custom-api-access', to: '/admin/docs/api-keys' },
-    { label: 'SDK', icon: 'i-custom-sdk', to: '/admin/docs/sdk' },
-    { label: 'GitHub Bot', icon: 'i-simple-icons-github', to: '/admin/docs/github-bot' },
-    { label: 'Discord Bot', icon: 'i-simple-icons-discord', to: '/admin/docs/discord-bot' },
-    { label: 'Admin Mode', icon: 'i-custom-shield', to: '/admin/docs/admin-mode' },
-  ],
+  // [
+  //   { label: 'Documentation', type: 'label' as const },
+  //   { label: 'Getting Started', icon: 'i-lucide-rocket', to: '/admin/docs/getting-started' },
+  //   { label: 'API Keys', icon: 'i-custom-api-access', to: '/admin/docs/api-keys' },
+  //   { label: 'SDK', icon: 'i-custom-sdk', to: '/admin/docs/sdk' },
+  //   { label: 'GitHub Bot', icon: 'i-simple-icons-github', to: '/admin/docs/github-bot' },
+  //   { label: 'Discord Bot', icon: 'i-simple-icons-discord', to: '/admin/docs/discord-bot' },
+  //   { label: 'Admin Mode', icon: 'i-custom-shield', to: '/admin/docs/admin-mode' },
+  // ],
 ]
 
 const adminContentArea = useTemplateRef<HTMLElement>('adminContentArea')
