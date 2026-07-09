@@ -22,6 +22,10 @@ function getFileName(url: string): string {
   }
 }
 
+function resolveFileName(part: { url: string, filename?: string }): string {
+  return part.filename || getFileName(part.url)
+}
+
 interface Source {
   category: string
   file?: string
@@ -154,20 +158,28 @@ onMounted(() => {
                     :message-id="message.id"
                     readonly
                   />
-                  <a
-                    v-else-if="part.type === 'file'"
-                    :href="part.url"
-                    :download="getFileName(part.url)"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="inline-block"
-                  >
-                    <FileAvatar
-                      :name="getFileName(part.url)"
+                  <template v-else-if="part.type === 'file'">
+                    <FileCard
+                      v-if="message.role === 'assistant'"
+                      :name="resolveFileName(part)"
                       :type="part.mediaType"
-                      :preview-url="part.url"
+                      :url="part.url"
                     />
-                  </a>
+                    <a
+                      v-else
+                      :href="part.url"
+                      :download="resolveFileName(part)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="inline-block"
+                    >
+                      <FileAvatar
+                        :name="resolveFileName(part)"
+                        :type="part.mediaType"
+                        :preview-url="part.url"
+                      />
+                    </a>
+                  </template>
                 </template>
                 <template v-for="(part, index) in (message.parts.filter(p => p.type === 'data-sources') as DataSourcesPart[])" :key="`${message.id}-sources-${index}`">
                   <SourceChips

@@ -20,6 +20,18 @@ function generatePathname(username: string, chatId: string): string {
   return `${username}/${chatId}/bill-${suffix}.pdf`
 }
 
+function sanitizeFilenamePart(value: string): string {
+  return value.replace(/[/\\:*?"<>|]/g, '-').trim()
+}
+
+// Vietnamese convention: ngày-tháng-năm (DD-MM-YYYY), pinned to VN timezone
+// regardless of server locale.
+function formatBillDate(date: Date): string {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Ho_Chi_Minh', day: '2-digit', month: '2-digit', year: 'numeric' })
+    .format(date)
+    .replace(/\//g, '-')
+}
+
 export default defineEventHandler(async (event) => {
   const requestLog = useLogger(event)
   const { user } = await requireUserSession(event)
@@ -67,7 +79,7 @@ export default defineEventHandler(async (event) => {
   const pathname = generatePathname(user.username ?? user.id, chatId)
   await blob.put(pathname, Buffer.from(pdfBytes), { contentType: 'application/pdf' })
 
-  const filename = `bill-${order.customerName}.pdf`
+  const filename = `${sanitizeFilenamePart(order.customerName)}-${formatBillDate(new Date())}.pdf`
 
   const [inserted] = await db.insert(schema.messages).values({
     chatId,

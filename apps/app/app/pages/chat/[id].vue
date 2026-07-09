@@ -34,6 +34,10 @@ function getFileName(url: string): string {
   }
 }
 
+function resolveFileName(part: { url: string, filename?: string }): string {
+  return part.filename || getFileName(part.url)
+}
+
 const {
   dropzoneRef,
   isDragging,
@@ -415,20 +419,28 @@ watch(() => chat.status, (newStatus, oldStatus) => {
                 @confirmed="handleOrderConfirmed"
                 @change-requested="handleOrderChangeRequested"
               />
-              <a
-                v-else-if="part.type === 'file'"
-                :href="part.url"
-                :download="getFileName(part.url)"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="inline-block"
-              >
-                <FileAvatar
-                  :name="getFileName(part.url)"
+              <template v-else-if="part.type === 'file'">
+                <FileCard
+                  v-if="message.role === 'assistant'"
+                  :name="resolveFileName(part)"
                   :type="part.mediaType"
-                  :preview-url="part.url"
+                  :url="part.url"
                 />
-              </a>
+                <a
+                  v-else
+                  :href="part.url"
+                  :download="resolveFileName(part)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-block"
+                >
+                  <FileAvatar
+                    :name="resolveFileName(part)"
+                    :type="part.mediaType"
+                    :preview-url="part.url"
+                  />
+                </a>
+              </template>
             </template>
           </template>
         </UChatMessages>
