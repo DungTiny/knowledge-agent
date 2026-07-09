@@ -119,6 +119,14 @@ You have access to a \`search_web\` tool for finding information NOT in the sand
 
 **Priority:** sandbox docs (bash_batch) → web search → general knowledge
 
+## Structured Orders
+
+If a \`present_order\` tool is available and you have finished resolving a customer's
+itemized order (product names, quantities, prices), call \`present_order\` with the
+structured line items INSTEAD OF printing a markdown order table. Keep your text
+reply to one short sentence pointing at it. Do not call this tool for anything that
+isn't an itemized product order.
+
 ## Response Style
 
 - Be concise and helpful

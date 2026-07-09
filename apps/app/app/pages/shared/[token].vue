@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { DefineComponent } from 'vue'
 import ProseStreamPre from '../../components/prose/PreStream.vue'
+import type { PresentOrderUIToolInvocation } from '#shared/utils/tools/present-order'
 
 const appConfig = useAppConfig()
 
@@ -147,12 +148,26 @@ onMounted(() => {
                     v-else-if="part.type === 'tool-chart'"
                     :invocation="(part as ChartUIToolInvocation)"
                   />
-                  <FileAvatar
-                    v-else-if="part.type === 'file'"
-                    :name="getFileName(part.url)"
-                    :type="part.mediaType"
-                    :preview-url="part.url"
+                  <ToolOrderConfirmation
+                    v-else-if="part.type === 'tool-present_order'"
+                    :invocation="(part as PresentOrderUIToolInvocation)"
+                    :message-id="message.id"
+                    readonly
                   />
+                  <a
+                    v-else-if="part.type === 'file'"
+                    :href="part.url"
+                    :download="getFileName(part.url)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="inline-block"
+                  >
+                    <FileAvatar
+                      :name="getFileName(part.url)"
+                      :type="part.mediaType"
+                      :preview-url="part.url"
+                    />
+                  </a>
                 </template>
                 <template v-for="(part, index) in (message.parts.filter(p => p.type === 'data-sources') as DataSourcesPart[])" :key="`${message.id}-sources-${index}`">
                   <SourceChips

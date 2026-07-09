@@ -15,6 +15,7 @@ import { KV_KEYS } from '../../utils/sandbox/types'
 import { adminTools } from '../../utils/chat/admin-tools'
 import { checkRateLimit, incrementRateLimit } from '../../utils/rate-limit'
 import { CUSTOM_MODEL_ID } from '#shared/utils/model-provider'
+import { presentOrderTool } from '#shared/utils/tools/present-order'
 
 defineRouteMeta({
   openAPI: {
@@ -115,7 +116,7 @@ export default defineEventHandler(async (event) => {
         getLanguageModel: resolveCustomLanguageModel,
       })
       : createSourceAgent({
-        tools: savoir.tools,
+        tools: { ...savoir.tools, present_order: presentOrderTool },
         getAgentConfig,
         messages,
         defaultModel: model,

@@ -34,3 +34,10 @@ export interface PatchChatShareBody {
 }
 
 export type PatchChatShareResponse = DbChat
+
+export interface PostOrderPdfBody {
+  messageId: string
+  toolCallId: string
+}
+
+export type PostOrderPdfResponse = DbMessage

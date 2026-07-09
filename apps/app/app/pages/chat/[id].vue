@@ -8,6 +8,7 @@ import { getTextFromMessage } from '@nuxt/ui/utils/ai'
 import ProseStreamPre from '../../components/prose/PreStream.vue'
 import type { ToolCall } from '#shared/types/tool-call'
 import type { GetChatResponse } from '#shared/types/chat'
+import type { PresentOrderUIToolInvocation } from '#shared/utils/tools/present-order'
 
 definePageMeta({ auth: 'user' })
 
@@ -217,7 +218,7 @@ function getMessageToolCalls(message: UIMessage): ToolCall[] {
   for (const part of message.parts as Array<{ type: string; [key: string]: unknown }>) {
     if (typeof part.type !== 'string' || !part.type.startsWith('tool-')) continue
     const toolName = part.type.slice('tool-'.length)
-    if (toolName === 'chart') continue
+    if (toolName === 'chart' || toolName === 'present_order') continue
 
     const inv = part as unknown as NativeToolPart
     if (coveredIds.has(inv.toolCallId)) continue // already shown via data-tool-call (old messages)
@@ -256,10 +257,11 @@ function getMessageToolCalls(message: UIMessage): ToolCall[] {
 // Filter out intermediate "thinking out loud" text between tool calls.
 // Only keeps text parts that appear after the last tool call (the actual response).
 function getContentParts(message: UIMessage) {
+  const isRenderedTool = (type: string) => type === 'tool-chart' || type === 'tool-present_order'
   let lastToolIdx = -1
   for (let i = message.parts.length - 1; i >= 0; i--) {
     const { type } = message.parts[i] as { type: string }
-    if (type === 'data-tool-call' || (type.startsWith('tool-') && type !== 'tool-chart')) {
+    if (type === 'data-tool-call' || (type.startsWith('tool-') && !isRenderedTool(type))) {
       lastToolIdx = i
       break
     }
@@ -267,10 +269,19 @@ function getContentParts(message: UIMessage) {
   return message.parts.filter((p, i) => {
     const { type } = p as { type: string }
     if (type === 'data-sources' || type === 'data-tool-call') return false
-    if (type.startsWith('tool-') && type !== 'tool-chart') return false
+    if (type.startsWith('tool-') && !isRenderedTool(type)) return false
     if (type === 'text' && message.role === 'assistant' && i <= lastToolIdx) return false
     return true
   })
+}
+
+function handleOrderConfirmed(message: unknown) {
+  chat.messages = [...chat.messages, message as UIMessage]
+}
+
+function handleOrderChangeRequested() {
+  if (chat.status !== 'ready') return
+  chat.sendMessage({ text: 'Tôi cần thay đổi đơn hàng này.' })
 }
 
 const chatMessagesRef = ref<InstanceType<typeof import('#components').UChatMessages>>()
@@ -396,12 +407,28 @@ watch(() => chat.status, (newStatus, oldStatus) => {
                 v-else-if="part.type === 'tool-chart'"
                 :invocation="(part as ChartUIToolInvocation)"
               />
-              <FileAvatar
-                v-else-if="part.type === 'file'"
-                :name="getFileName(part.url)"
-                :type="part.mediaType"
-                :preview-url="part.url"
+              <ToolOrderConfirmation
+                v-else-if="part.type === 'tool-present_order'"
+                :invocation="(part as PresentOrderUIToolInvocation)"
+                :message-id="message.id"
+                :busy="chat.status === 'streaming' || chat.status === 'submitted'"
+                @confirmed="handleOrderConfirmed"
+                @change-requested="handleOrderChangeRequested"
               />
+              <a
+                v-else-if="part.type === 'file'"
+                :href="part.url"
+                :download="getFileName(part.url)"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-block"
+              >
+                <FileAvatar
+                  :name="getFileName(part.url)"
+                  :type="part.mediaType"
+                  :preview-url="part.url"
+                />
+              </a>
             </template>
           </template>
         </UChatMessages>
