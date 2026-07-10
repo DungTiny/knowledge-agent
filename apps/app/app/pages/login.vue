@@ -89,32 +89,10 @@ function onGitHub() {
   <div class="flex min-h-dvh bg-default">
     <div class="w-full lg:w-1/2 flex items-center justify-center p-8 relative">
       <div class="absolute top-4 right-4 flex items-center gap-1">
-        <UButton
-          :to="appConfig.app.deployUrl"
-          target="_blank"
-          icon="i-simple-icons-vercel"
-          label="Deploy on Vercel"
-          color="neutral"
-          variant="ghost"
-          size="sm"
-        />
-        <UButton
-          :to="appConfig.app.repoUrl"
-          target="_blank"
-          icon="i-simple-icons-github"
-          color="neutral"
-          variant="ghost"
-          size="sm"
-          square
-        />
-        <UColorModeButton size="sm" />
       </div>
 
       <div class="w-full max-w-sm">
         <div class="text-center mb-8">
-          <div class="inline-flex items-center justify-center mb-4">
-            <UIcon :name="appConfig.app.icon" class="size-8 text-highlighted" />
-          </div>
           <h1 class="text-2xl font-semibold text-highlighted">
             {{ mode === 'signin' ? 'Welcome back' : 'Create your account' }}
           </h1>
@@ -193,18 +171,8 @@ function onGitHub() {
             </button>
           </template>
         </p>
-
-        <UAlert
-          class="mt-8"
-          color="neutral"
-          variant="subtle"
-          icon="i-lucide-info"
-          :title="appConfig.app.description"
-          :ui="{ root: 'p-3', title: 'text-xs font-normal', icon: 'size-4' }"
-        />
-
         <p class="mt-6 text-center text-xs text-dimmed">
-          This is a demo instance of a template project. Data may be reset at any time — do not store anything you want to keep.
+          Đây chỉ là bản demo 
         </p>
       </div>
     </div>

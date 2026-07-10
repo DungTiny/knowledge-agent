@@ -21,13 +21,18 @@ const BASE_MODELS = [
   'anthropic/claude-opus-4.6',
 ]
 
+// Temporarily hide base models in chat: only the custom provider is selectable
+// (and used as default). Base models remain as fallback when the custom
+// provider is not configured. Flip to false to restore the full list.
+const CUSTOM_ONLY = true
+
 interface CustomModelPublicInfo {
   available: boolean
   label: string
 }
 
 export function useModels() {
-  const model = useCookie<string>('model', { default: () => 'anthropic/claude-sonnet-4.6' })
+  const model = useCookie<string>('model', { default: () => CUSTOM_ONLY ? CUSTOM_MODEL_ID : 'anthropic/claude-sonnet-4.6' })
 
   const customModel = useState<CustomModelPublicInfo | null>('custom-model-provider', () => null)
 
@@ -39,13 +44,19 @@ export function useModels() {
   }, { immediate: true })
 
   watch(customModel, (v) => {
-    if (v && !v.available && model.value === CUSTOM_MODEL_ID) {
+    if (!v) return
+    if (!v.available && model.value === CUSTOM_MODEL_ID) {
       model.value = 'anthropic/claude-sonnet-4.6'
+    }
+    else if (v.available && CUSTOM_ONLY && model.value !== CUSTOM_MODEL_ID) {
+      // coerce stale cookies (e.g. previously selected base model) to custom
+      model.value = CUSTOM_MODEL_ID
     }
   })
 
   const models = computed(() => {
-    return customModel.value?.available ? [...BASE_MODELS, CUSTOM_MODEL_ID] : BASE_MODELS
+    if (!customModel.value?.available) return BASE_MODELS
+    return CUSTOM_ONLY ? [CUSTOM_MODEL_ID] : [...BASE_MODELS, CUSTOM_MODEL_ID]
   })
 
   const customModelLabel = computed(() => customModel.value?.label || 'Custom')
