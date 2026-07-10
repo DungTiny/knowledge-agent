@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { getPaginationRowModel, getSortedRowModel } from '@tanstack/vue-table'
+import { z } from 'zod'
 import type { TableColumn } from '@nuxt/ui'
 
 useSeoMeta({ title: 'Users - Admin' })
@@ -37,6 +38,22 @@ const deleteModalOpen = computed({
     if (!v) userToDelete.value = null
   },
 })
+
+const createModalOpen = ref(false)
+const isCreatingUser = ref(false)
+const createState = reactive({ name: '', email: '', password: '', role: 'user' as UserRole })
+
+const createSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  email: z.email('Invalid email address'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  role: z.enum(['user', 'admin']),
+})
+
+const roleOptions = [
+  { label: 'User', value: 'user', icon: 'i-lucide-user' },
+  { label: 'Admin', value: 'admin', icon: 'i-lucide-shield' },
+]
 
 const columns: TableColumn<AdminUserRow>[] = [
   {
@@ -119,6 +136,29 @@ function getRowActions(row: AdminUserRow) {
   ]
 }
 
+async function createUser() {
+  isCreatingUser.value = true
+  try {
+    await $fetch('/api/admin/users', {
+      method: 'POST',
+      body: { ...createState },
+    })
+    const createdName = createState.name || createState.email
+    createModalOpen.value = false
+    Object.assign(createState, { name: '', email: '', password: '', role: 'user' })
+    await refresh()
+    toast.add({
+      title: 'User created',
+      description: `${createdName} has been created.`,
+      icon: 'i-lucide-check',
+    })
+  } catch (e) {
+    showError(e, { fallback: 'Failed to create user' })
+  } finally {
+    isCreatingUser.value = false
+  }
+}
+
 async function deleteUser() {
   const row = userToDelete.value
   if (!row) return
@@ -184,16 +224,24 @@ async function changeRole(row: AdminUserRow, newRole: UserRole) {
             Manage user access and roles across the platform.
           </p>
         </div>
-        <UTooltip text="Refresh data">
+        <div class="flex items-center gap-2">
+          <UTooltip text="Refresh data">
+            <UButton
+              icon="i-lucide-refresh-cw"
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              :loading="status === 'pending'"
+              @click="refresh()"
+            />
+          </UTooltip>
           <UButton
-            icon="i-lucide-refresh-cw"
-            color="neutral"
-            variant="ghost"
+            label="Create user"
+            icon="i-lucide-user-plus"
             size="xs"
-            :loading="status === 'pending'"
-            @click="refresh()"
+            @click="createModalOpen = true"
           />
-        </UTooltip>
+        </div>
       </div>
     </header>
 
@@ -387,6 +435,77 @@ async function changeRole(row: AdminUserRow, newRole: UserRole) {
               @click="deleteUser()"
             />
           </div>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal v-model:open="createModalOpen">
+      <template #content>
+        <div class="p-6">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="size-10 rounded-lg bg-primary/10 flex items-center justify-center">
+              <UIcon name="i-lucide-user-plus" class="size-5 text-primary" />
+            </div>
+            <div>
+              <h3 class="text-sm font-medium text-highlighted">
+                Create user
+              </h3>
+              <p class="text-xs text-muted">
+                The user can sign in with this email and password.
+              </p>
+            </div>
+          </div>
+          <UForm :schema="createSchema" :state="createState" class="space-y-4" @submit="createUser()">
+            <UFormField label="Name" name="name">
+              <UInput
+                v-model="createState.name"
+                placeholder="Jane Doe"
+                autocomplete="off"
+                class="w-full"
+              />
+            </UFormField>
+            <UFormField label="Email" name="email">
+              <UInput
+                v-model="createState.email"
+                type="email"
+                placeholder="jane@example.com"
+                autocomplete="off"
+                class="w-full"
+              />
+            </UFormField>
+            <UFormField label="Password" name="password">
+              <UInput
+                v-model="createState.password"
+                type="password"
+                placeholder="At least 8 characters"
+                autocomplete="new-password"
+                class="w-full"
+              />
+            </UFormField>
+            <UFormField label="Role" name="role">
+              <USelectMenu
+                v-model="createState.role"
+                :items="roleOptions"
+                value-key="value"
+                class="w-full"
+              />
+            </UFormField>
+            <div class="flex justify-end gap-2 pt-2">
+              <UButton
+                label="Cancel"
+                color="neutral"
+                variant="ghost"
+                size="sm"
+                @click="createModalOpen = false"
+              />
+              <UButton
+                label="Create user"
+                type="submit"
+                size="sm"
+                :loading="isCreatingUser"
+              />
+            </div>
+          </UForm>
         </div>
       </template>
     </UModal>
