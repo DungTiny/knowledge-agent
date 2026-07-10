@@ -27,6 +27,8 @@ export interface SourceAgentOptions {
    * LanguageModelV3 to use instead of resolving the id via the AI Gateway.
    */
   getLanguageModel?: (modelId: string) => Promise<LanguageModelV3 | undefined> | LanguageModelV3 | undefined
+  /** Optionally supply a pre-built model to use for the router classification call, bypassing the AI Gateway ROUTER_MODEL. */
+  getRouterModel?: () => Promise<LanguageModelV3 | undefined> | LanguageModelV3 | undefined
   onRouted?: (result: RoutingResult) => void
    
   onStepFinish?: (stepResult: any) => void
@@ -42,6 +44,7 @@ export function createSourceAgent({
   requestId,
   defaultModel = DEFAULT_MODEL,
   getLanguageModel,
+  getRouterModel,
   onRouted,
   onStepFinish,
   onFinish,
@@ -58,7 +61,7 @@ export function createSourceAgent({
       const customContext = (options as AgentCallOptions | undefined)?.context
 
       const [routerConfig, agentConfig] = await Promise.all([
-        routeQuestion(messages, id, apiKey),
+        Promise.resolve(getRouterModel?.()).then(routerModel => routeQuestion(messages, id, apiKey, routerModel)),
         getAgentConfig(),
       ])
 

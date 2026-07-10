@@ -24,12 +24,16 @@ defineRouteMeta({
   },
 })
 
-async function resolveCustomLanguageModel(modelId: string): Promise<LanguageModelV3 | undefined> {
-  if (modelId !== CUSTOM_MODEL_ID) return undefined
+async function getCustomChatModel(): Promise<LanguageModelV3 | undefined> {
   const config = await getModelProviderConfig()
   if (!isModelProviderConfigured(config)) return undefined
   const provider = createOpenAICompatible({ baseURL: config.baseUrl!, apiKey: config.apiKey!, name: 'custom' })
   return provider.chatModel(config.modelId!)
+}
+
+async function resolveCustomLanguageModel(modelId: string): Promise<LanguageModelV3 | undefined> {
+  if (modelId !== CUSTOM_MODEL_ID) return undefined
+  return getCustomChatModel()
 }
 
 export default defineEventHandler(async (event) => {
@@ -122,6 +126,7 @@ export default defineEventHandler(async (event) => {
         defaultModel: model,
         requestId,
         getLanguageModel: resolveCustomLanguageModel,
+        getRouterModel: getCustomChatModel,
         onRouted: ({ routerConfig, agentConfig, effectiveModel: routedModel, effectiveMaxSteps }) => {
           effectiveModel = routedModel
           requestLog.set({
