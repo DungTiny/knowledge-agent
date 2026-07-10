@@ -1,4 +1,4 @@
-import { stepCountIs, ToolLoopAgent, type StepResult, type ToolSet, type UIMessage } from 'ai'
+import { hasToolCall, stepCountIs, ToolLoopAgent, type StepResult, type ToolSet, type UIMessage } from 'ai'
 import { log } from 'evlog'
 import type { LanguageModelV3 } from '@ai-sdk/provider'
 import { DEFAULT_MODEL, buildProviderOptions } from '../router/schema'
@@ -83,7 +83,12 @@ export function createSourceAgent({
         model: wrap(customModel ?? effectiveModel),
         instructions: applyComplexity(buildChatSystemPrompt(agentConfig), routerConfig),
         tools: { ...tools, web_search: webSearchTool },
-        stopWhen: stepCountIs(effectiveMaxSteps),
+        // present_order renders an interactive card awaiting a real user click (Đồng ý lên
+        // bill / Cần thay đổi). Its execute() resolves synchronously, so without this the
+        // loop has no signal that it's a turn-ending, human-confirmation action — the model
+        // can (and did) call it again in a later step, re-presenting an unchanged order with
+        // new phrasing each time. Stop unconditionally the step after it's called.
+        stopWhen: [stepCountIs(effectiveMaxSteps), hasToolCall('present_order')],
         providerOptions: customModel ? undefined : buildProviderOptions(effectiveModel, resolveGatewayMetadata()),
         experimental_context: executionContext,
       }
