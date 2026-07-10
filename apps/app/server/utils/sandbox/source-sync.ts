@@ -384,11 +384,9 @@ export async function syncFileSource(
       try {
         const filepath = `${targetDir}/${entry.filename}`
 
-        await sandbox.runCommand({
-          cmd: 'sh',
-          args: ['-c', `cat > '${filepath}' << 'EOFMARKER'\n${entry.content}\nEOFMARKER`],
-          cwd: '/vercel/sandbox',
-        })
+        await sandbox.writeFiles([
+          { path: filepath, content: Buffer.from(entry.content, 'utf-8') },
+        ])
 
         fileCount++
       } catch (error) {
