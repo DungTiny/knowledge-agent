@@ -1,4 +1,4 @@
-import { convertToModelMessages, createUIMessageStream, createUIMessageStreamResponse, type UIMessage } from 'ai'
+import { convertToModelMessages, createUIMessageStream, createUIMessageStreamResponse, pruneMessages, streamText, type UIMessage } from 'ai'
 import { z } from 'zod'
 import { db, schema } from '@nuxthub/db'
 import { kv } from '@nuxthub/kv'
@@ -7,7 +7,7 @@ import { createSavoir } from '@savoir/sdk'
 import { useLogger } from 'evlog'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import type { LanguageModelV3 } from '@ai-sdk/provider'
-import { createSourceAgent, createAdminAgent, setAIGatewayMetadata } from '@savoir/agent'
+import { buildProviderOptions, createSourceAgent, createAdminAgent, resolveGatewayMetadata, setAIGatewayMetadata } from '@savoir/agent'
 import { generateTitle } from '../../utils/chat/generate-title'
 import { getAgentConfig } from '../../utils/agent-config'
 import { getModelProviderConfig, isModelProviderConfigured } from '../../utils/model-provider'
@@ -32,7 +32,7 @@ async function getCustomChatModel(): Promise<LanguageModelV3 | undefined> {
   return provider.chatModel(config.modelId!)
 }
 
-async function resolveCustomLanguageModel(modelId: string): Promise<LanguageModelV3 | undefined> {
+function resolveCustomLanguageModel(modelId: string): Promise<LanguageModelV3 | undefined> | undefined {
   if (modelId !== CUSTOM_MODEL_ID) return undefined
   return getCustomChatModel()
 }
@@ -159,12 +159,81 @@ export default defineEventHandler(async (event) => {
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
+        const modelMessages = await convertToModelMessages(messages)
         const result = await agent.stream({
-          messages: await convertToModelMessages(messages),
+          messages: modelMessages,
           options: {},
           abortSignal: abortController.signal,
         })
-        writer.merge(result.toUIMessageStream())
+
+        // Forward the agent stream ourselves so fallback output is guaranteed to
+        // come after every tool chunk. The finish chunk is emitted only after we
+        // know whether the agent produced user-visible output.
+        for await (const part of result.toUIMessageStream({ sendFinish: false })) {
+          writer.write(part)
+        }
+
+        const [resultText, steps, agentFinishReason] = await Promise.all([
+          result.text,
+          result.steps,
+          result.finishReason,
+        ])
+        const hasPresentedOrder = steps.some(step =>
+          step.toolCalls.some(call => call.toolName === 'present_order'),
+        )
+
+        let finalFinishReason = agentFinishReason
+
+        // Some OpenAI-compatible models can ignore toolChoice:none and exhaust
+        // the loop with finishReason=tool-calls. Never persist a blank assistant
+        // message: make one final call with no tools and, if that also returns no
+        // text, emit a deterministic user-facing failure message.
+        if (!resultText.trim() && !hasPresentedOrder && !abortController.signal.aborted) {
+          requestLog.set({ emptyAgentResponse: true, fallbackAttempted: true })
+
+          const customFallbackModel = await resolveCustomLanguageModel(effectiveModel)
+          const generatedMessages = steps.flatMap(step => step.response.messages)
+          const fallbackMessages = pruneMessages({
+            messages: [
+              ...modelMessages,
+              ...generatedMessages,
+              {
+                role: 'user',
+                content: 'You have no tools available now. Give the user a concise final answer using only the search results above. Do not request or call tools. If an order cannot be completed from the available data, clearly state which items still need confirmation. Never return an empty response.',
+              },
+            ],
+            reasoning: 'all',
+            toolCalls: 'before-last-8-messages',
+            emptyMessages: 'remove',
+          })
+
+          const fallback = streamText({
+            model: customFallbackModel ?? effectiveModel,
+            messages: fallbackMessages,
+            abortSignal: abortController.signal,
+            providerOptions: customFallbackModel
+              ? undefined
+              : buildProviderOptions(effectiveModel, resolveGatewayMetadata()),
+          })
+
+          for await (const part of fallback.toUIMessageStream({ sendStart: false, sendFinish: false })) {
+            writer.write(part)
+          }
+
+          const fallbackText = await fallback.text
+          finalFinishReason = await fallback.finishReason
+
+          if (!fallbackText.trim()) {
+            const textId = `fallback-${crypto.randomUUID()}`
+            const fallbackMessage = 'Mình chưa thể hoàn tất đơn từ dữ liệu vừa tìm được. Vui lòng thử lại; nếu lỗi tiếp tục xảy ra, hãy kiểm tra cấu hình model hoặc dữ liệu bảng giá.'
+            writer.write({ type: 'text-start', id: textId })
+            writer.write({ type: 'text-delta', id: textId, delta: fallbackMessage })
+            writer.write({ type: 'text-end', id: textId })
+            finalFinishReason = 'stop'
+          }
+        }
+
+        writer.write({ type: 'finish', finishReason: finalFinishReason })
 
         const title = await titleTask
         if (title) {

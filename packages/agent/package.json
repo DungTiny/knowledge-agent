@@ -30,6 +30,7 @@
     "build": "tsdown",
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit",
+    "test": "bun test tests",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

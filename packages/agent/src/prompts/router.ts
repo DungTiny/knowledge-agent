@@ -16,12 +16,14 @@ Analyze the user's question and determine the appropriate configuration for the 
 **moderate** (maxSteps: 15, model: claude-sonnet-4.6)
 - Comparisons or multi-concept questions requiring 2–5 file reads
 - Integration questions requiring exploration of multiple sources
+- Creating a customer order with up to 4 product lines
 - Examples: "Difference between X and Y?", "How to use X with Y?", "How to set up authentication?"
 
 **complex** (maxSteps: 25, model: claude-opus-4.6)
 - Debugging scenarios describing errors or unexpected behavior
 - Architecture questions spanning multiple systems
 - Deep analysis requiring cross-referencing many files
+- Creating a customer order with 5 or more product lines (requires customer lookup, catalog lookup, per-line pricing, and confirmation)
 - Examples: "My deployment is failing with this error...", "How to build a multi-tenant app?", "Design a full auth flow with sessions and roles"
 
 **Note:** Questions referencing current events, recent releases, or topics unlikely to be covered in the sandbox documentation should be classified as at least **moderate** to allow the agent enough steps for web search.`

@@ -32,6 +32,35 @@ function extractQuestionFromMessages(messages: UIMessage[]): string {
   return textParts || ''
 }
 
+const ORDER_INTENT_PATTERN = /\b(?:lên|len|tạo|tao|chốt|chot|đặt|dat)\s+(?:đơn|don|bill)\b|\bđơn\s+hàng\b|\border\b/i
+const ORDER_LINE_PATTERN = /\b\d+(?:[.,]\d+)?\s*(?:hộp|hop|lon|hũ|hu|gói|goi|túi|tui|chai|lọ|lo|thùng|thung|lốc|loc|kg|gr|g|ml|lít|lit|cuộn|cuon|xâu|xau)\b/i
+
+/**
+ * Business workflows must not depend solely on the LLM classifier. Creating an
+ * order requires customer/catalog lookup, one deterministic price calculation
+ * per line, and a final present_order call, so an eight-step "simple" budget is
+ * structurally insufficient for multi-line orders.
+ */
+export function applyRoutingGuardrails(question: string, config: AgentConfig): AgentConfig {
+  if (!ORDER_INTENT_PATTERN.test(question)) return config
+
+  const lineItemCount = question
+    .split(/\r?\n/)
+    .filter(line => ORDER_LINE_PATTERN.test(line))
+    .length
+
+  const isLargeOrder = lineItemCount >= 5
+  const minimumSteps = isLargeOrder ? 25 : 15
+  if (config.maxSteps >= minimumSteps) return config
+
+  return {
+    ...config,
+    complexity: isLargeOrder ? 'complex' : 'moderate',
+    maxSteps: minimumSteps,
+    reasoning: `Order workflow with ${lineItemCount || 'unknown'} line items requires lookup, pricing, and confirmation`,
+  }
+}
+
 export async function routeQuestion(
   messages: UIMessage[],
   requestId: string,
@@ -77,14 +106,15 @@ export async function routeQuestion(
 
     if (!output) {
       log.warn({ event: 'router.no_output', requestId })
-      return getDefaultConfig()
+      return applyRoutingGuardrails(question, getDefaultConfig())
     }
 
+    output = applyRoutingGuardrails(question, output)
     log.info({ event: 'router.decision', requestId, complexity: output.complexity, model: output.model, maxSteps: output.maxSteps, reasoning: output.reasoning })
     return output
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
     log.error({ event: 'router.failed', requestId, error: errorMessage })
-    return getDefaultConfig()
+    return applyRoutingGuardrails(question, getDefaultConfig())
   }
 }

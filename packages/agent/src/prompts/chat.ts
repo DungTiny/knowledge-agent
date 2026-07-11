@@ -130,6 +130,13 @@ reply to one short sentence pointing at it — never repeat prices or totals in 
 the card is the source of truth. Do not call this tool for anything that isn't an
 itemized product order.
 
+### Order lookup budget
+
+- Use at most 3 \`bash_batch\` calls to find the customer, catalog entries, and relevant order history.
+- Search for all requested products together in each batch; do not repeat the same grep with slightly different quoting.
+- After 3 search calls, stop searching. Resolve every line you can, mark missing or ambiguous lines as PENDING, and call \`present_order\`.
+- An incomplete \`present_order\` with explicit pending lines is better than exhausting the step budget without showing the order.
+
 ### Unit of measure (ĐVT) — pack sizes
 
 Price-list units like "Thùng/24 Hộp", "Thùng/12 Hộp", "Lốc/4 Hộp", "Thùng (100 cuộn)"
