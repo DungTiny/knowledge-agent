@@ -22,29 +22,36 @@ const {
 } = useFileUploadWithStatus(chatId)
 
 async function createChat(prompt: string) {
+  if (loading.value || isUploading.value || !prompt.trim()) return
+
   input.value = prompt
   loading.value = true
 
-  const parts: Array<{ type: string, text?: string, mediaType?: string, url?: string }> = [{ type: 'text', text: prompt }]
+  const parts: Array<{ type: string, text?: string, mediaType?: string, url?: string }> = [{ type: 'text', text: prompt.trim() }]
 
   if (uploadedFiles.value.length > 0) {
     parts.push(...uploadedFiles.value)
   }
 
-  const chat = await $fetch('/api/chats', {
-    method: 'POST',
-    body: {
-      id: chatId,
-      mode: mode.value,
-      message: {
-        role: 'user',
-        parts
+  try {
+    const chat = await $fetch('/api/chats', {
+      method: 'POST',
+      body: {
+        id: chatId,
+        mode: mode.value,
+        message: {
+          role: 'user',
+          parts
+        }
       }
-    }
-  })
+    })
 
-  refreshNuxtData('chats')
-  navigateTo(`/chat/${chat?.id}`)
+    await refreshNuxtData('chats')
+    await navigateTo(`/chat/${chat.id}`)
+  } catch (error) {
+    loading.value = false
+    throw error
+  }
 }
 
 async function onSubmit() {
@@ -97,8 +104,7 @@ const quickChats = computed(() => mode.value === 'admin' ? adminQuickChats : [])
 
         <UChatPrompt
           v-model="input"
-          :status="loading ? 'streaming' : 'ready'"
-          :disabled="isUploading"
+          :disabled="isUploading || loading"
           class="[view-transition-name:chat-prompt]"
           variant="subtle"
           :ui="{ base: 'px-1.5' }"
@@ -126,7 +132,11 @@ const quickChats = computed(() => mode.value === 'admin' ? adminQuickChats : [])
               <ModelSelect v-model="model" />
             </div>
 
-            <UChatPromptSubmit size="sm" :disabled="isUploading" />
+            <UChatPromptSubmit
+              size="sm"
+              :status="loading ? 'submitted' : 'ready'"
+              :disabled="isUploading || loading"
+            />
           </template>
         </UChatPrompt>
 

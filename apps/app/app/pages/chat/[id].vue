@@ -97,7 +97,7 @@ const chat = new Chat({
 
 function handleSubmit(e: Event) {
   e.preventDefault()
-  if (input.value.trim() && !isUploading.value) {
+  if (input.value.trim() && !isUploading.value && chat.status === 'ready') {
     chat.sendMessage({
       text: input.value,
       files: uploadedFiles.value.length > 0 ? uploadedFiles.value : undefined
@@ -448,7 +448,7 @@ watch(() => chat.status, (newStatus, oldStatus) => {
         <UChatPrompt
           v-model="input"
           :error="chat.error"
-          :disabled="isUploading"
+          :disabled="isUploading || chat.status !== 'ready'"
           variant="subtle"
           class="sticky bottom-0 [view-transition-name:chat-prompt] rounded-b-none z-10"
           :ui="{ base: 'px-1.5' }"
