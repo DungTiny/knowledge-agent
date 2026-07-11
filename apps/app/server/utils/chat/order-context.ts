@@ -42,16 +42,38 @@ function quoteShell(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`
 }
 
+const ASCII_ONLY = /^[\x20-\x7E]+$/
+
+/**
+ * grep -i only case-folds ASCII under BSD grep or a C locale, so a lowercase
+ * word with diacritics ("định") silently misses the bill's Title Case rows
+ * ("Định"). Emit explicit case variants instead; the shell policy blocks `|`
+ * inside patterns, so they are OR'd with repeated -F -e flags, not regex.
+ */
+function grepPatternFlags(word: string): string {
+  const variants = [word]
+  if (!ASCII_ONLY.test(word)) {
+    const lower = word.toLocaleLowerCase('vi')
+    const title = lower.charAt(0).toLocaleUpperCase('vi') + lower.slice(1)
+    variants.push(lower, title, word.toLocaleUpperCase('vi'))
+  }
+  return [...new Set(variants)].map(variant => `-e ${quoteShell(variant)}`).join(' ')
+}
+
 export function buildOrderLookupCommands(request: OrderLookupRequest): string[] {
   const customerWords = request.customer.split(/\s+/).filter(Boolean)
+  // Customers often paste an address line ("04 trương định"); house numbers
+  // never appear in bill customer names but do match dates like 04/07/2026.
+  const nameWords = customerWords.filter(word => !/^\d+$/.test(word))
+  const words = nameWords.length > 0 ? nameWords : customerWords
 
   return request.products.map((product) => {
-    const [firstCustomerWord, ...remainingCustomerWords] = customerWords
-    const firstSearch = `grep -n -i -F ${quoteShell(firstCustomerWord ?? request.customer)} ${BILL_PATH}`
+    const [firstCustomerWord, ...remainingCustomerWords] = words
+    const firstSearch = `grep -n -i -F ${grepPatternFlags(firstCustomerWord ?? request.customer)} ${BILL_PATH}`
     const filters = [
       ...remainingCustomerWords,
       ...product.split(/\s+/).filter(Boolean),
-    ].map(word => `grep -i -F ${quoteShell(word)}`)
+    ].map(word => `grep -i -F ${grepPatternFlags(word)}`)
 
     return [firstSearch, ...filters, 'head -20'].join(' | ')
   })

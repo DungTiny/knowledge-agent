@@ -88,8 +88,10 @@ function onChangeRequested() {
                 {{ index + 1 }}
               </td>
               <td class="px-3 py-2">
-                {{ item.name }} <span class="text-muted">x{{ item.quantity }} {{ item.unit }}</span>
-                <span v-if="item.orderedQuantity != null && item.orderedUnit" class="block text-xs text-muted">
+                {{ item.name }}
+                <span v-if="item.quantity > 0" class="text-muted">x{{ item.quantity }} {{ item.unit }}</span>
+                <span v-else-if="item.orderedQuantity != null && item.orderedUnit" class="text-muted">x{{ item.orderedQuantity }} {{ item.orderedUnit }}</span>
+                <span v-if="item.quantity > 0 && item.orderedQuantity != null && item.orderedUnit" class="block text-xs text-muted">
                   Khách đặt: {{ item.orderedQuantity }} {{ item.orderedUnit }}
                 </span>
               </td>

@@ -10,7 +10,7 @@ const orderItemSchema = z.object({
   sku: z.string().optional().describe('Product code (Mã hàng), if resolved'),
   orderedQuantity: z.number().optional().describe('Quantity exactly as the customer requested, e.g. 12 for "12 hộp". Omit only when the customer ordered in the catalog unit'),
   orderedUnit: z.string().optional().describe('Unit exactly as the customer said it, with proper diacritics, e.g. "Hộp". Omit only when the customer ordered in the catalog unit'),
-  quantity: z.number().describe('Billed quantity in catalog ĐVT units — may be fractional, e.g. 0.5 for 12 hộp of a "Thùng/24 Hộp" product. Recomputed server-side from orderedQuantity/orderedUnit when provided'),
+  quantity: z.number().describe('Billed quantity in catalog ĐVT units — may be fractional, e.g. 0.5 for 12 hộp of a "Thùng/24 Hộp" product. Recomputed server-side from orderedQuantity/orderedUnit when provided. Use 0 for a pending line whose billed quantity is unknown — the card then shows orderedQuantity instead'),
   unit: z.string().describe('Catalog unit of measure (ĐVT) exactly as written in the price list, e.g. "Chai", "Hộp", "Thùng/24 Hộp"'),
   unitPrice: z.number().nullable().describe('Giá bán for ONE catalog unit (never per sub-unit), null if this line is not yet resolved'),
   lineTotal: z.number().nullable().describe('quantity * unitPrice — recomputed server-side, null if not yet resolved'),

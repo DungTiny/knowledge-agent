@@ -129,6 +129,7 @@ You have access to a \`search_web\` tool for finding information NOT in the sand
 - If preloaded rows are missing, search \`files/bill/BILL.md\` directly with \`bash_batch\`; combine all missing lookups in one call.
 - Never run \`grep\` without an explicit file or directory argument because it waits for stdin and stalls the request.
 - Search the customer and all requested product names together. Example commands: \`grep -n -i -m 40 "Quốc Học" files/bill/BILL.md\` and \`grep -n -i -E "Mứt Xoài|Đào Lon|Richs" files/bill/BILL.md | head -80\`.
+- \`grep -i\` may NOT case-fold Vietnamese letters (đ ≠ Đ, ộ ≠ Ộ). Always type names in the Title Case used by the bill ("Trương Định", "Đào Hồng"), never all-lowercase. If a name yields nothing, retry with a distinctive ASCII fragment ("Wonderfarm", "Richs").
 - If that exact path is missing, use \`find . -iname "BILL.md"\` once. If no file is found, say that the current knowledge snapshot is missing BILL.md and ask an admin to sync sources.
 - NEVER use web search for customer identities, internal price lists, order history, or order creation. Public web results cannot replace this internal source.
 
