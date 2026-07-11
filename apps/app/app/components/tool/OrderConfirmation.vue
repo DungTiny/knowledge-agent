@@ -89,6 +89,9 @@ function onChangeRequested() {
               </td>
               <td class="px-3 py-2">
                 {{ item.name }} <span class="text-muted">x{{ item.quantity }} {{ item.unit }}</span>
+                <span v-if="item.orderedQuantity != null && item.orderedUnit" class="block text-xs text-muted">
+                  Khách đặt: {{ item.orderedQuantity }} {{ item.orderedUnit }}
+                </span>
               </td>
               <td class="px-3 py-2 text-right" :class="{ 'text-error': item.unitPrice === null }">
                 {{ formatVnd(item.unitPrice) }}

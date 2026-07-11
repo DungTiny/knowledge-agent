@@ -16,6 +16,7 @@ import { adminTools } from '../../utils/chat/admin-tools'
 import { checkRateLimit, incrementRateLimit } from '../../utils/rate-limit'
 import { CUSTOM_MODEL_ID } from '#shared/utils/model-provider'
 import { presentOrderTool } from '#shared/utils/tools/present-order'
+import { resolveOrderLineTool } from '#shared/utils/tools/resolve-order-line'
 
 defineRouteMeta({
   openAPI: {
@@ -120,7 +121,7 @@ export default defineEventHandler(async (event) => {
         getLanguageModel: resolveCustomLanguageModel,
       })
       : createSourceAgent({
-        tools: { ...savoir.tools, present_order: presentOrderTool },
+        tools: { ...savoir.tools, present_order: presentOrderTool, resolve_order_line: resolveOrderLineTool },
         getAgentConfig,
         messages,
         defaultModel: model,
