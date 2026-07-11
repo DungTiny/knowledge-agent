@@ -3,7 +3,21 @@ import { z } from 'zod'
 import type { SavoirClient } from '../client'
 import { validateShellCommand } from '../shell-policy'
 
-export function createBashTool(client: SavoirClient) {
+export interface ShellToolBudget {
+  used: number
+  max: number
+}
+
+export function consumeShellBudget(budget?: ShellToolBudget): string | null {
+  if (!budget) return null
+  if (budget.used >= budget.max) {
+    return `Shell lookup budget exhausted after ${budget.max} calls. Stop searching and answer with the results already collected.`
+  }
+  budget.used++
+  return null
+}
+
+export function createBashTool(client: SavoirClient, budget?: ShellToolBudget) {
   return tool({
     description: `Execute a bash command in the documentation sandbox.
 Use standard Unix commands to explore and read files.`,
@@ -17,6 +31,20 @@ Use standard Unix commands to explore and read files.`,
     execute: async function* ({ command }) {
       yield { status: 'loading' as const }
       const start = Date.now()
+      const budgetError = consumeShellBudget(budget)
+
+      if (budgetError) {
+        yield {
+          status: 'done' as const,
+          success: false,
+          durationMs: Date.now() - start,
+          stdout: '',
+          stderr: budgetError,
+          exitCode: 1,
+          commands: [{ command, stdout: '', stderr: budgetError, exitCode: 1, success: false }],
+        }
+        return
+      }
 
       const validation = validateShellCommand(command, {
         allowedBaseDirectory: '/vercel/sandbox',
@@ -51,7 +79,7 @@ Use standard Unix commands to explore and read files.`,
   })
 }
 
-export function createBashBatchTool(client: SavoirClient) {
+export function createBashBatchTool(client: SavoirClient, budget?: ShellToolBudget) {
   return tool({
     description: `Execute multiple bash commands in the documentation sandbox in a single request.
 More efficient than multiple single bash calls — use this as your primary tool.
@@ -74,6 +102,19 @@ Maximum 10 commands per batch.`,
     execute: async function* ({ commands }) {
       yield { status: 'loading' as const }
       const start = Date.now()
+      const budgetError = consumeShellBudget(budget)
+
+      if (budgetError) {
+        const commandResults = commands.map(command => ({ command, stdout: '', stderr: budgetError, exitCode: 1, success: false }))
+        yield {
+          status: 'done' as const,
+          success: false,
+          durationMs: Date.now() - start,
+          results: commandResults.map(({ command, stdout, stderr, exitCode }) => ({ command, stdout, stderr, exitCode })),
+          commands: commandResults,
+        }
+        return
+      }
 
       for (const command of commands) {
         const validation = validateShellCommand(command, {

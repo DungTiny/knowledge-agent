@@ -48,12 +48,15 @@ export interface Savoir {
  */
 export function createSavoir(config: SavoirConfig): Savoir {
   const client = new SavoirClient(config)
+  const shellBudget = config.maxShellToolCalls === undefined
+    ? undefined
+    : { used: 0, max: Math.max(0, Math.floor(config.maxShellToolCalls)) }
 
   return {
     client,
     tools: {
-      bash: createBashTool(client),
-      bash_batch: createBashBatchTool(client),
+      bash: createBashTool(client, shellBudget),
+      bash_batch: createBashBatchTool(client, shellBudget),
     },
     getSessionId: () => client.getSessionId(),
     setSessionId: (sessionId: string) => client.setSessionId(sessionId),

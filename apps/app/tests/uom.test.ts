@@ -259,6 +259,34 @@ describe('resolveOrderLine — measure conversion', () => {
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.quantity).toBe(3)
   })
+
+  test('200 gr of a product listed by Lạng → 2 lạng', () => {
+    const result = resolveOrderLine({
+      catalogUnit: 'Lạng',
+      catalogPrice: 29_000,
+      requestedQuantity: 200,
+      requestedUnit: 'gr',
+    })
+    expect(result).toEqual({
+      ok: true,
+      quantity: 2,
+      unit: 'Lạng',
+      unitPrice: 29_000,
+      lineTotal: 58_000,
+      conversion: '200gr = 2 Lạng',
+    })
+  })
+
+  test('50 g of a product listed by Lạng → 0.5 lạng', () => {
+    const result = resolveOrderLine({
+      catalogUnit: 'Lạng',
+      catalogPrice: 29_000,
+      requestedQuantity: 50,
+      requestedUnit: 'g',
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.quantity).toBe(0.5)
+  })
 })
 
 describe('normalizeOrder', () => {

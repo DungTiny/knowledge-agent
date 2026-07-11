@@ -125,7 +125,8 @@ You have access to a \`search_web\` tool for finding information NOT in the sand
 ### Internal order source — required in every new chat
 
 - The source of truth for Mộc Trà customer prices and order history is \`files/bill/BILL.md\` inside the sandbox.
-- For every order request, search \`files/bill/BILL.md\` directly in the first \`bash_batch\`. The single-command \`bash\` tool is intentionally unavailable for orders; combine lookups in \`bash_batch\`.
+- The server preloads matching customer/product rows before the agent starts. Use that preloaded context first and do not repeat successful lookups. Shell tools are fallback-only and have a hard call limit.
+- If preloaded rows are missing, search \`files/bill/BILL.md\` directly with \`bash_batch\`; combine all missing lookups in one call.
 - Never run \`grep\` without an explicit file or directory argument because it waits for stdin and stalls the request.
 - Search the customer and all requested product names together. Example commands: \`grep -n -i -m 40 "Quốc Học" files/bill/BILL.md\` and \`grep -n -i -E "Mứt Xoài|Đào Lon|Richs" files/bill/BILL.md | head -80\`.
 - If that exact path is missing, use \`find . -iname "BILL.md"\` once. If no file is found, say that the current knowledge snapshot is missing BILL.md and ask an admin to sync sources.
@@ -185,6 +186,10 @@ the listed price is for one unit of that size. If the customer orders by the mea
 said ("kg", "g", "l", "ml") and \`orderedQuantity\` as the number — the server converts it
 to the number of catalog units (same dimension only: kg↔g, l↔ml). Example: "Mứt Chunky
 1Kg" ordered as "1kg" → 1 Túi; "500g" → 0.5 Túi.
+
+**Lạng conversion:** 1 Lạng = 100g. For a product priced by \`Lạng\`, pass the customer's
+gram quantity unchanged to \`resolve_order_line\`; the server converts 200gr → 2 Lạng and
+50gr → 0.5 Lạng. Never flag grams versus Lạng as a unit mismatch.
 
 ## Response Style
 

@@ -7,6 +7,8 @@ export interface SavoirConfig {
   headers?: Record<string, string>
   /** Reuse an existing sandbox session instead of creating a new one. */
   sessionId?: string
+  /** Maximum combined bash/bash_batch tool calls for this SDK instance. */
+  maxShellToolCalls?: number
   /** Usage source identifier (e.g. 'github-bot'). Defaults to 'sdk'. */
   source?: string
   /** Optional tracking ID (e.g. 'issue-123'). Can be overridden per reportUsage() call. */

@@ -11,6 +11,7 @@
  * for no reason:
  *   - Synonym units — customers say "hộp" for a product listed as "Lon".
  *   - Measure units — a product listed as "Túi 1Kg" ordered as "1kg" / "500g".
+ *   - Plain measures — a product listed by "Lạng" ordered as grams (100g = 1 lạng).
  */
 
 export interface PackSpec {
@@ -66,6 +67,8 @@ const MEASURE_FACTORS: Record<string, { dimension: Dimension, toBase: number }> 
   gr: { dimension: 'mass', toBase: 1 },
   gam: { dimension: 'mass', toBase: 1 },
   gram: { dimension: 'mass', toBase: 1 },
+  lạng: { dimension: 'mass', toBase: 100 },
+  lang: { dimension: 'mass', toBase: 100 },
   l: { dimension: 'volume', toBase: 1000 },
   lit: { dimension: 'volume', toBase: 1000 },
   lít: { dimension: 'volume', toBase: 1000 },
@@ -143,8 +146,9 @@ function resolved(quantity: number, catalogUnit: string, catalogPrice: number, c
  * Deterministic conversion + pricing for one order line.
  *
  * Resolution order: order in the catalog unit (or a synonym / the container
- * name) → pack sub-unit conversion ("Thùng/24 Hộp") → measure conversion
- * ("Túi 1Kg" ordered as kg/g). Anything that doesn't cleanly convert to a
+ * name) → pack sub-unit conversion ("Thùng/24 Hộp") → sized measure conversion
+ * ("Túi 1Kg" ordered as kg/g) → plain measure conversion (grams to Lạng/KG).
+ * Anything that doesn't cleanly convert to a
  * whole or half container returns ok:false so the caller marks it pending
  * instead of guessing.
  */
@@ -189,6 +193,17 @@ export function resolveOrderLine(input: ResolveOrderLineInput): ResolveOrderLine
       }
       return resolved(quantity, catalogUnit, catalogPrice, `${requestedQuantity}${requestedUnit} = ${quantity} × ${catalogUnit}`)
     }
+  }
+
+  // 4. Plain catalog measure conversion, e.g. 200gr = 2 Lạng.
+  const catalogMeasure = measureFactor(catalogUnit)
+  const requestedMeasure = measureFactor(requestedUnit!)
+  if (catalogMeasure && requestedMeasure && catalogMeasure.dimension === requestedMeasure.dimension) {
+    const quantity = toHalfStep((requestedQuantity * requestedMeasure.toBase) / catalogMeasure.toBase)
+    if (quantity === null) {
+      return { ok: false, warning: `Cần xác nhận: ${requestedQuantity}${requestedUnit} lẻ so với đơn vị ${catalogUnit} (chỉ hỗ trợ bước 0.5 ${catalogUnit.toLowerCase()})` }
+    }
+    return resolved(quantity, catalogUnit, catalogPrice, `${requestedQuantity}${requestedUnit} = ${quantity} ${catalogUnit}`)
   }
 
   return { ok: false, warning: `Cần xác nhận: đơn vị "${requestedUnit}" không khớp quy cách "${catalogUnit}"` }

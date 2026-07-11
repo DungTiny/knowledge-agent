@@ -13,6 +13,7 @@ import { getAgentConfig } from '../../utils/agent-config'
 import { getModelProviderConfig, isModelProviderConfigured } from '../../utils/model-provider'
 import { KV_KEYS } from '../../utils/sandbox/types'
 import { adminTools } from '../../utils/chat/admin-tools'
+import { parseOrderLookupRequest, preloadOrderContext } from '../../utils/chat/order-context'
 import { checkRateLimit, incrementRateLimit } from '../../utils/rate-limit'
 import { CUSTOM_MODEL_ID } from '#shared/utils/model-provider'
 import { presentOrderTool } from '#shared/utils/tools/present-order'
@@ -109,11 +110,25 @@ export default defineEventHandler(async (event) => {
     }
 
     const cookie = getHeader(event, 'cookie')
+    const orderLookupRequest = isAdminChat ? null : parseOrderLookupRequest(messages)
     const savoir = createSavoir({
       apiUrl: getRequestURL(event).origin,
       headers: cookie ? { cookie } : undefined,
       sessionId: existingSessionId || undefined,
+      maxShellToolCalls: orderLookupRequest ? 3 : undefined,
     })
+    const orderContextTask = orderLookupRequest
+      ? preloadOrderContext(savoir.client, orderLookupRequest)
+        .then((context) => {
+          requestLog.set({ orderContextPreloaded: true, orderProductCount: orderLookupRequest.products.length })
+          return context
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error)
+          requestLog.set({ orderContextPreloaded: false, orderContextError: message })
+          return `## Internal order context preload failed\n${message}\nUse the bounded shell tools to check files/bill/BILL.md once, then present unresolved items as PENDING.`
+        })
+      : Promise.resolve<string | null>(null)
 
     const agent = isAdminChat
       ? createAdminAgent({
@@ -159,7 +174,13 @@ export default defineEventHandler(async (event) => {
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        const modelMessages = await convertToModelMessages(messages)
+        const [modelMessages, orderContext] = await Promise.all([
+          convertToModelMessages(messages),
+          orderContextTask,
+        ])
+        if (orderContext) {
+          modelMessages.unshift({ role: 'system', content: orderContext })
+        }
         const result = await agent.stream({
           messages: modelMessages,
           options: {},

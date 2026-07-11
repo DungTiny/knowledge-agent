@@ -71,7 +71,7 @@ export function createSourceAgent({
       const customModel = await getLanguageModel?.(effectiveModel)
       isOrderWorkflow = routerConfig.reasoning.startsWith(ORDER_WORKFLOW_REASON_PREFIX)
       const effectiveTools = isOrderWorkflow
-        ? Object.fromEntries(Object.entries(tools).filter(([name]) => name !== 'bash'))
+        ? { ...tools }
         : { ...tools, web_search: webSearchTool }
 
       maxSteps = effectiveMaxSteps
