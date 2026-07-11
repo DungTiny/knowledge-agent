@@ -29,6 +29,29 @@ describe('validateShellCommand', () => {
       reason: 'Path outside sandbox is not allowed: /etc/passwd',
     })
   })
+
+  test('rejects grep without an explicit input path', () => {
+    expect(validateShellCommand('grep "CF"')).toEqual({
+      ok: false,
+      reason: 'grep requires an explicit file or directory when it is not reading from a pipe',
+    })
+    expect(validateShellCommand('grep -m 40 "CF"')).toEqual({
+      ok: false,
+      reason: 'grep requires an explicit file or directory when it is not reading from a pipe',
+    })
+  })
+
+  test('accepts grep with a file and grep later in a pipeline', () => {
+    expect(validateShellCommand('grep -i "CF" files/bill/BILL.md | grep -i "Quốc Học"')).toEqual({ ok: true })
+    expect(validateShellCommand('grep -m 40 -e "CF" files/bill/BILL.md')).toEqual({ ok: true })
+  })
+
+  test('rejects file readers without a path', () => {
+    expect(validateShellCommand('cat')).toEqual({
+      ok: false,
+      reason: 'cat requires an explicit file path',
+    })
+  })
 })
 
 describe('path utils', () => {

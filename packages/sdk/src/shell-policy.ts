@@ -147,6 +147,58 @@ function validatePaths(command: string, allowedBaseDirectory?: string): ShellVal
   return { ok: true }
 }
 
+function validateNonInteractiveInput(command: string): ShellValidationResult {
+  const firstSegment = command.split(/\s*(?:\|(?!\|)|\|\||&&|;)\s*/, 1)[0]?.trim() ?? ''
+  const tokens = firstSegment.match(/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s]+/g) ?? []
+  const [commandName] = tokens
+
+  // These forms wait for stdin forever in a non-interactive sandbox. A grep
+  // later in a pipeline is valid because it receives stdin from the previous
+  // command; only guard the first segment here.
+  if (commandName && ['grep', 'egrep', 'fgrep'].includes(commandName)) {
+    const optionsWithValue = new Set(['-A', '-B', '-C', '-d', '-D', '-m', '--after-context', '--before-context', '--context', '--devices', '--directories', '--max-count'])
+    let hasPatternOption = false
+    let positionalCount = 0
+
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens.at(i)!
+      if (token === '--') {
+        positionalCount += tokens.length - i - 1
+        break
+      }
+      if (token === '-e' || token === '-f' || token === '--regexp' || token === '--file') {
+        hasPatternOption = true
+        i++
+        continue
+      }
+      if (/^(?:-e|-f).+/.test(token) || /^(?:--regexp|--file)=/.test(token)) {
+        hasPatternOption = true
+        continue
+      }
+      if (optionsWithValue.has(token)) {
+        i++
+        continue
+      }
+      if (/^(?:-[ABCdmD]\S+|--(?:after-context|before-context|context|devices|directories|max-count)=)/.test(token)) {
+        continue
+      }
+      if (token.startsWith('-')) continue
+      positionalCount++
+    }
+
+    const requiredPositionals = hasPatternOption ? 1 : 2
+    if (positionalCount < requiredPositionals) {
+      return { ok: false, reason: 'grep requires an explicit file or directory when it is not reading from a pipe' }
+    }
+  }
+
+  if (commandName && ['cat', 'head', 'tail', 'less', 'more'].includes(commandName) && tokens.length === 1) {
+    return { ok: false, reason: `${firstSegment} requires an explicit file path` }
+  }
+
+  return { ok: true }
+}
+
 export function validateShellCommand(
   command: string,
   options?: ShellValidationOptions,
@@ -170,6 +222,9 @@ export function validateShellCommand(
       return { ok: false, reason: `Command not allowed: ${cmdName || 'unknown'}` }
     }
   }
+
+  const inputValidation = validateNonInteractiveInput(command)
+  if (!inputValidation.ok) return inputValidation
 
   return validatePaths(command, options?.allowedBaseDirectory)
 }

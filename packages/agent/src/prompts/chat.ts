@@ -125,7 +125,8 @@ You have access to a \`search_web\` tool for finding information NOT in the sand
 ### Internal order source — required in every new chat
 
 - The source of truth for Mộc Trà customer prices and order history is \`files/bill/BILL.md\` inside the sandbox.
-- For every order request, search \`files/bill/BILL.md\` directly in the first \`bash_batch\`. Never run \`grep\` without an explicit file or directory argument.
+- For every order request, search \`files/bill/BILL.md\` directly in the first \`bash_batch\`. The single-command \`bash\` tool is intentionally unavailable for orders; combine lookups in \`bash_batch\`.
+- Never run \`grep\` without an explicit file or directory argument because it waits for stdin and stalls the request.
 - Search the customer and all requested product names together. Example commands: \`grep -n -i -m 40 "Quốc Học" files/bill/BILL.md\` and \`grep -n -i -E "Mứt Xoài|Đào Lon|Richs" files/bill/BILL.md | head -80\`.
 - If that exact path is missing, use \`find . -iname "BILL.md"\` once. If no file is found, say that the current knowledge snapshot is missing BILL.md and ask an admin to sync sources.
 - NEVER use web search for customer identities, internal price lists, order history, or order creation. Public web results cannot replace this internal source.

@@ -13,6 +13,7 @@ const bodySchema = z.object({
 )
 
 const MAX_OUTPUT = 50000
+const COMMAND_TIMEOUT_MS = 15_000
 
 function validateCommand(command: string): void {
   const validation = validateShellCommand(command, {
@@ -64,11 +65,28 @@ export default defineEventHandler(async (event) => {
 
   for (const command of commands) {
     const execStart = Date.now()
-    const result = await sandbox.runCommand({
-      cmd: 'bash',
-      args: ['-c', command],
-      cwd: '/vercel/sandbox',
-    })
+    const signal = AbortSignal.timeout(COMMAND_TIMEOUT_MS)
+    let result
+
+    try {
+      result = await sandbox.runCommand({
+        cmd: 'bash',
+        args: ['-c', command],
+        cwd: '/vercel/sandbox',
+        signal,
+      })
+    } catch (error) {
+      if (!signal.aborted) throw error
+
+      results.push({
+        command,
+        stdout: '',
+        stderr: `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s`,
+        exitCode: 124,
+        execMs: Date.now() - execStart,
+      })
+      continue
+    }
 
     results.push({
       command,

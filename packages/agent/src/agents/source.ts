@@ -14,7 +14,7 @@ import { resolveModelWrapper, resolveGatewayMetadata } from '../core/observe'
 import type { AgentConfigData, AgentCallOptions, AgentExecutionContext, RoutingResult } from '../types'
 
 export interface SourceAgentOptions {
-  tools: Record<string, unknown>
+  tools: ToolSet
   getAgentConfig: () => Promise<AgentConfigData>
   messages: UIMessage[]
   /** AI Gateway API key. Optional — falls back to OIDC on Vercel or AI_GATEWAY_API_KEY env var. */
@@ -51,9 +51,10 @@ export function createSourceAgent({
 }: SourceAgentOptions) {
   const id = requestId ?? crypto.randomUUID().slice(0, 8)
   let maxSteps = 15
+  let isOrderWorkflow = false
   const wrap = resolveModelWrapper()
 
-  return new ToolLoopAgent({
+  return new ToolLoopAgent<AgentCallOptions, ToolSet>({
     model: wrap(DEFAULT_MODEL),
     callOptionsSchema,
     prepareCall: async ({ options, ...settings }) => {
@@ -68,7 +69,10 @@ export function createSourceAgent({
       const effectiveMaxSteps = Math.round(routerConfig.maxSteps * agentConfig.maxStepsMultiplier)
       const effectiveModel = modelOverride ?? agentConfig.defaultModel ?? defaultModel
       const customModel = await getLanguageModel?.(effectiveModel)
-      const isOrderWorkflow = routerConfig.reasoning.startsWith(ORDER_WORKFLOW_REASON_PREFIX)
+      isOrderWorkflow = routerConfig.reasoning.startsWith(ORDER_WORKFLOW_REASON_PREFIX)
+      const effectiveTools = isOrderWorkflow
+        ? Object.fromEntries(Object.entries(tools).filter(([name]) => name !== 'bash'))
+        : { ...tools, web_search: webSearchTool }
 
       maxSteps = effectiveMaxSteps
       onRouted?.({ routerConfig, agentConfig, effectiveModel, effectiveMaxSteps })
@@ -89,7 +93,7 @@ export function createSourceAgent({
         // Customer identities and negotiated prices are private sandbox data.
         // Web search cannot answer order workflows and caused fresh chats to
         // abandon BILL.md after one weak grep, so it is deliberately unavailable.
-        tools: isOrderWorkflow ? { ...tools } : { ...tools, web_search: webSearchTool },
+        tools: effectiveTools,
         // present_order renders an interactive card awaiting a real user click (Đồng ý lên
         // bill / Cần thay đổi). Its execute() resolves synchronously, so without this the
         // loop has no signal that it's a turn-ending, human-confirmation action — the model
@@ -104,6 +108,21 @@ export function createSourceAgent({
       sanitizeToolCallInputs(stepMessages)
       const normalizedSteps = (steps as StepResult<ToolSet>[] | undefined) ?? []
       const compactedMessages = compactContext({ messages: stepMessages, steps: normalizedSteps })
+
+      const orderSearchCalls = normalizedSteps.reduce(
+        (count, step) => count + step.toolCalls.filter(call => call.toolName === 'bash_batch').length,
+        0,
+      )
+
+      if (isOrderWorkflow && orderSearchCalls >= 3) {
+        const activeTools = ['resolve_order_line', 'present_order'].filter(name => name in tools)
+        log.info({ event: 'agent.order_search_complete', step: stepNumber + 1, searchCalls: orderSearchCalls })
+        return {
+          activeTools,
+          toolChoice: 'auto' as const,
+          ...(compactedMessages !== stepMessages ? { messages: compactedMessages } : {}),
+        }
+      }
 
       if (shouldForceTextOnlyStep({ stepNumber, maxSteps, steps: normalizedSteps })) {
         log.info({ event: 'agent.force_text_step', step: stepNumber + 1, maxSteps, toolStreak: countConsecutiveToolSteps(normalizedSteps) })
