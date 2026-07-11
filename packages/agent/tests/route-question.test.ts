@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { applyRoutingGuardrails } from '../src/router/route-question'
+import { applyRoutingGuardrails, ORDER_WORKFLOW_REASON_PREFIX } from '../src/router/route-question'
 import type { AgentConfig } from '../src/router/schema'
 
 const simpleConfig: AgentConfig = {
@@ -24,6 +24,7 @@ Trà lài 1kg`
     expect(applyRoutingGuardrails(question, simpleConfig)).toMatchObject({
       complexity: 'complex',
       maxSteps: 25,
+      reasoning: expect.stringContaining(ORDER_WORKFLOW_REASON_PREFIX),
     })
   })
 
@@ -40,6 +41,10 @@ Trà lài 1kg`
 
   test('does not reduce an already larger budget', () => {
     const existing: AgentConfig = { ...simpleConfig, complexity: 'complex', maxSteps: 30 }
-    expect(applyRoutingGuardrails('hãy tạo đơn\nRichs 12 hộp', existing)).toEqual(existing)
+    expect(applyRoutingGuardrails('hãy tạo đơn\nRichs 12 hộp', existing)).toMatchObject({
+      complexity: 'complex',
+      maxSteps: 30,
+      reasoning: expect.stringContaining(ORDER_WORKFLOW_REASON_PREFIX),
+    })
   })
 })

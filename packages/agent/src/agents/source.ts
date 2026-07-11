@@ -2,7 +2,7 @@ import { hasToolCall, stepCountIs, ToolLoopAgent, type StepResult, type ToolSet,
 import { log } from 'evlog'
 import type { LanguageModelV3 } from '@ai-sdk/provider'
 import { DEFAULT_MODEL, buildProviderOptions } from '../router/schema'
-import { routeQuestion } from '../router/route-question'
+import { ORDER_WORKFLOW_REASON_PREFIX, routeQuestion } from '../router/route-question'
 import { buildChatSystemPrompt } from '../prompts/chat'
 import { applyComplexity } from '../prompts/shared'
 import { compactContext } from '../core/context'
@@ -68,6 +68,7 @@ export function createSourceAgent({
       const effectiveMaxSteps = Math.round(routerConfig.maxSteps * agentConfig.maxStepsMultiplier)
       const effectiveModel = modelOverride ?? agentConfig.defaultModel ?? defaultModel
       const customModel = await getLanguageModel?.(effectiveModel)
+      const isOrderWorkflow = routerConfig.reasoning.startsWith(ORDER_WORKFLOW_REASON_PREFIX)
 
       maxSteps = effectiveMaxSteps
       onRouted?.({ routerConfig, agentConfig, effectiveModel, effectiveMaxSteps })
@@ -85,7 +86,10 @@ export function createSourceAgent({
         ...settings,
         model: wrap(customModel ?? effectiveModel),
         instructions: applyComplexity(buildChatSystemPrompt(agentConfig), routerConfig),
-        tools: { ...tools, web_search: webSearchTool },
+        // Customer identities and negotiated prices are private sandbox data.
+        // Web search cannot answer order workflows and caused fresh chats to
+        // abandon BILL.md after one weak grep, so it is deliberately unavailable.
+        tools: isOrderWorkflow ? { ...tools } : { ...tools, web_search: webSearchTool },
         // present_order renders an interactive card awaiting a real user click (Đồng ý lên
         // bill / Cần thay đổi). Its execute() resolves synchronously, so without this the
         // loop has no signal that it's a turn-ending, human-confirmation action — the model

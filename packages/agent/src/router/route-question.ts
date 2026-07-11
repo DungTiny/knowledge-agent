@@ -34,6 +34,7 @@ function extractQuestionFromMessages(messages: UIMessage[]): string {
 
 const ORDER_INTENT_PATTERN = /\b(?:lên|len|tạo|tao|chốt|chot|đặt|dat)\s+(?:đơn|don|bill)\b|\bđơn\s+hàng\b|\border\b/i
 const ORDER_LINE_PATTERN = /\b\d+(?:[.,]\d+)?\s*(?:hộp|hop|lon|hũ|hu|gói|goi|túi|tui|chai|lọ|lo|thùng|thung|lốc|loc|kg|gr|g|ml|lít|lit|cuộn|cuon|xâu|xau)\b/i
+export const ORDER_WORKFLOW_REASON_PREFIX = 'Order workflow'
 
 /**
  * Business workflows must not depend solely on the LLM classifier. Creating an
@@ -51,13 +52,14 @@ export function applyRoutingGuardrails(question: string, config: AgentConfig): A
 
   const isLargeOrder = lineItemCount >= 5
   const minimumSteps = isLargeOrder ? 25 : 15
-  if (config.maxSteps >= minimumSteps) return config
 
   return {
     ...config,
-    complexity: isLargeOrder ? 'complex' : 'moderate',
-    maxSteps: minimumSteps,
-    reasoning: `Order workflow with ${lineItemCount || 'unknown'} line items requires lookup, pricing, and confirmation`,
+    complexity: config.maxSteps >= minimumSteps
+      ? config.complexity
+      : isLargeOrder ? 'complex' : 'moderate',
+    maxSteps: Math.max(config.maxSteps, minimumSteps),
+    reasoning: `${ORDER_WORKFLOW_REASON_PREFIX} with ${lineItemCount || 'unknown'} line items requires lookup, pricing, and confirmation`,
   }
 }
 
