@@ -106,7 +106,76 @@ export function parseSizedUnit(unit: string): SizedUnit {
   return { base: trimmed, measureBase: null, dimension: null }
 }
 
+/**
+ * Packaging aliases confirmed by the business for specific products only.
+ * Hộp and Túi must not become global synonyms because that would mis-bill
+ * unrelated products.
+ */
+const PRODUCT_PACKAGING_ALIASES = [
+  { productTokens: ['boduo', 'mut', 'xoai'], units: ['hop', 'tui'] },
+  { productTokens: ['thach', 'agar', 'chuandai'], units: ['hop', 'tui'] },
+]
+
+function normalizeLookupText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function packagingBase(unit: string): string {
+  const sized = parseSizedUnit(unit)
+  const base = sized.measureBase === null
+    ? unit.replace(/\s*\([^)]*\)\s*$/, '')
+    : sized.base
+  return normalizeLookupText(base)
+}
+
+function annotatedMeasure(unit: string): { dimension: Dimension, measureBase: number } | null {
+  const match = unit.match(/\(\s*(\d+(?:[.,]\d+)?)\s*([a-zà-ỹ]+)\s*\)\s*$/i)
+  if (!match) return null
+  const factor = measureFactor(match[2]!)
+  if (!factor) return null
+  return {
+    dimension: factor.dimension,
+    measureBase: Number(match[1]!.replace(',', '.')) * factor.toBase,
+  }
+}
+
+function productUnitsEquivalent(productName: string | undefined, a: string, b: string): boolean {
+  if (!productName) return false
+  const normalizedProduct = normalizeLookupText(productName)
+  const alias = PRODUCT_PACKAGING_ALIASES.find(candidate =>
+    candidate.productTokens.every(token => normalizedProduct.includes(token)),
+  )
+  if (!alias) return false
+
+  const left = packagingBase(a)
+  const right = packagingBase(b)
+  if (!alias.units.includes(left) || !alias.units.includes(right)) return false
+
+  // If the model adds a size annotation, it must agree with the sized catalog
+  // unit. This prevents a confirmed packaging alias from accepting the wrong SKU.
+  const leftAnnotation = annotatedMeasure(a)
+  const rightAnnotation = annotatedMeasure(b)
+  const leftSized = parseSizedUnit(a)
+  const rightSized = parseSizedUnit(b)
+  const leftMeasure = leftAnnotation
+    ?? (leftSized.measureBase === null ? null : { dimension: leftSized.dimension!, measureBase: leftSized.measureBase })
+  const rightMeasure = rightAnnotation
+    ?? (rightSized.measureBase === null ? null : { dimension: rightSized.dimension!, measureBase: rightSized.measureBase })
+
+  return !leftMeasure || !rightMeasure
+    || (leftMeasure.dimension === rightMeasure.dimension && Math.abs(leftMeasure.measureBase - rightMeasure.measureBase) < 1e-9)
+}
+
 export interface ResolveOrderLineInput {
+  /** Used only for explicitly confirmed, product-specific unit aliases. */
+  productName?: string
   /** ĐVT exactly as written in the price list, e.g. "Thùng/24 Hộp" */
   catalogUnit: string
   /** Giá bán for ONE catalog unit */
@@ -153,7 +222,7 @@ function resolved(quantity: number, catalogUnit: string, catalogPrice: number, c
  * instead of guessing.
  */
 export function resolveOrderLine(input: ResolveOrderLineInput): ResolveOrderLineResult {
-  const { catalogUnit, catalogPrice, requestedQuantity, requestedUnit } = input
+  const { productName, catalogUnit, catalogPrice, requestedQuantity, requestedUnit } = input
 
   if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
     return { ok: false, warning: `Cần xác nhận: số lượng không hợp lệ (${requestedQuantity})` }
@@ -170,6 +239,7 @@ export function resolveOrderLine(input: ResolveOrderLineInput): ResolveOrderLine
     || unitsEquivalent(requestedUnit, catalogUnit)
     || (pack !== null && unitsEquivalent(requestedUnit, pack.container))
     || (sized !== null && unitsEquivalent(requestedUnit, sized.base))
+    || productUnitsEquivalent(productName, requestedUnit, catalogUnit)
   if (orderedInCatalogUnit) {
     return resolved(requestedQuantity, catalogUnit, catalogPrice, `${requestedQuantity} ${catalogUnit}`)
   }
@@ -216,6 +286,8 @@ export interface OrderLineItem {
   orderedUnit?: string
   quantity: number
   unit: string
+  /** Known price retained when a line is pending only because of its unit. */
+  catalogPrice?: number
   unitPrice: number | null
   lineTotal: number | null
   note?: string
@@ -231,7 +303,16 @@ export interface OrderDraft {
 }
 
 function appendNote(existing: string | undefined, added: string): string {
+  if (existing?.includes(added)) return existing
   return existing ? `${existing} — ${added}` : added
+}
+
+function clearResolvedUnitWarnings(note: string | undefined): string | undefined {
+  if (!note) return undefined
+  const remaining = note
+    .split(' — ')
+    .filter(part => !part.trim().startsWith('⚠️ Cần xác nhận: đơn vị'))
+  return remaining.length > 0 ? remaining.join(' — ') : undefined
 }
 
 function round3(value: number): number {
@@ -249,25 +330,39 @@ function round3(value: number): number {
  */
 export function normalizeOrder(order: OrderDraft): OrderDraft {
   const items = order.items.map((item): OrderLineItem => {
-    if (item.unitPrice === null) {
+    const effectivePrice = item.unitPrice ?? item.catalogPrice ?? null
+    if (effectivePrice === null) {
       return { ...item, lineTotal: null }
     }
 
     let { quantity } = item
     if (item.orderedQuantity !== undefined && item.orderedQuantity !== null && item.orderedUnit) {
       const result = resolveOrderLine({
+        productName: item.name,
         catalogUnit: item.unit,
-        catalogPrice: item.unitPrice,
+        catalogPrice: effectivePrice,
         requestedQuantity: item.orderedQuantity,
         requestedUnit: item.orderedUnit,
       })
       if (!result.ok) {
-        return { ...item, unitPrice: null, lineTotal: null, note: appendNote(item.note, `⚠️ ${result.warning}`) }
+        return {
+          ...item,
+          catalogPrice: effectivePrice,
+          unitPrice: null,
+          lineTotal: null,
+          note: appendNote(item.note, `⚠️ ${result.warning}`),
+        }
       }
       ({ quantity } = result)
     }
 
-    return { ...item, quantity, lineTotal: Math.round(quantity * item.unitPrice) }
+    return {
+      ...item,
+      quantity,
+      unitPrice: effectivePrice,
+      lineTotal: Math.round(quantity * effectivePrice),
+      note: clearResolvedUnitWarnings(item.note),
+    }
   })
 
   return {

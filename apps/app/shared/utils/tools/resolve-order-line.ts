@@ -13,7 +13,7 @@ export const resolveOrderLineTool = tool({
   }),
   execute: ({ productName, ...input }) => {
     const start = Date.now()
-    const resolved = resolveOrderLine(input)
+    const resolved = resolveOrderLine({ productName, ...input })
     const text = resolved.ok
       ? `${productName}: ${resolved.conversion} → ${resolved.lineTotal.toLocaleString('vi-VN')}đ`
       : `${productName}: ${resolved.warning} — present this line as PENDING (unitPrice/lineTotal = null) with this warning as the note`
@@ -23,6 +23,9 @@ export const resolveOrderLineTool = tool({
       durationMs: Date.now() - start,
       success: resolved.ok,
       text,
+      // Keep the known price available even when unit validation fails so a
+      // later staff confirmation can resolve the line without another lookup.
+      catalogPrice: input.catalogPrice,
       ...(resolved.ok
         ? { quantity: resolved.quantity, unit: resolved.unit, unitPrice: resolved.unitPrice, lineTotal: resolved.lineTotal }
         : { warning: resolved.warning }),

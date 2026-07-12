@@ -35,6 +35,19 @@ Trà lài 1kg`
     })
   })
 
+  test('promotes a structurally itemized order without an explicit intent phrase', () => {
+    const question = `Cốt dừa Wonderfarm 5 hộp
+Đào hồng wonderful 1 lon
+
+04 Trương Định`
+
+    expect(applyRoutingGuardrails(question, simpleConfig)).toMatchObject({
+      complexity: 'moderate',
+      maxSteps: 15,
+      reasoning: expect.stringContaining(ORDER_WORKFLOW_REASON_PREFIX),
+    })
+  })
+
   test('does not modify an ordinary lookup', () => {
     expect(applyRoutingGuardrails('Richs là sản phẩm gì?', simpleConfig)).toEqual(simpleConfig)
   })

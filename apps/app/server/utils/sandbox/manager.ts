@@ -1,5 +1,6 @@
 import { Sandbox } from '@vercel/sandbox'
 import { createError, log } from 'evlog'
+import { isSandboxSessionCurrent } from './types'
 import type { ActiveSandbox, SandboxManagerConfig, SnapshotMetadata } from './types'
 import { getCurrentSnapshot, setCurrentSnapshot } from './snapshot'
 import { deleteSandboxSession, generateSessionId, getSandboxSession, setSandboxSession, touchSandboxSession } from './session'
@@ -130,22 +131,30 @@ async function findRunningSandbox(snapshotId: string): Promise<Sandbox | null> {
 export async function getOrCreateSandbox(sessionId?: string): Promise<ActiveSandbox> {
   const config = await getConfig()
   const startTime = Date.now()
+  const currentSnapshot = await getCurrentSnapshot()
 
   // 1. Try to reconnect via session ID (fastest path)
   if (sessionId) {
     const session = await getSandboxSession(sessionId)
     if (session) {
-      const sandbox = await getSandboxById(session.sandboxId)
-      if (sandbox) {
-        log.info('sandbox', `Reusing sandbox ${sandbox.sandboxId} for session ${sessionId} (${Date.now() - startTime}ms)`)
-        await touchSandboxSession(sessionId, config.sessionTtlMs)
-        return { sandbox, session, sessionId }
+      // A source sync creates a new snapshot. Never keep serving files from a
+      // session that was created from an older snapshot.
+      if (!isSandboxSessionCurrent(session, currentSnapshot)) {
+        log.info('sandbox', `Discarding stale session ${sessionId}: ${session.snapshotId} -> ${currentSnapshot?.snapshotId}`)
+        await deleteSandboxSession(sessionId)
+      } else {
+        const sandbox = await getSandboxById(session.sandboxId)
+        if (sandbox) {
+          log.info('sandbox', `Reusing sandbox ${sandbox.sandboxId} for session ${sessionId} (${Date.now() - startTime}ms)`)
+          await touchSandboxSession(sessionId, config.sessionTtlMs)
+          return { sandbox, session, sessionId }
+        }
+        await deleteSandboxSession(sessionId)
       }
-      await deleteSandboxSession(sessionId)
     }
   }
 
-  const snapshotId = await getOrCreateSnapshot()
+  const snapshotId = currentSnapshot?.snapshotId ?? await getOrCreateSnapshot()
 
   // 2. Try to find an already running sandbox with the same snapshot
   const existingSandbox = await findRunningSandbox(snapshotId)

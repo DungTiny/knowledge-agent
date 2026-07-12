@@ -210,6 +210,58 @@ describe('resolveOrderLine — synonyms', () => {
       expect(result.lineTotal).toBe(352_500)
     }
   })
+
+  test('accepts confirmed Hộp packaging for BODUO Mứt Xoài', () => {
+    const result = resolveOrderLine({
+      productName: 'BODUO Mứt Xoài 1,3Kg',
+      catalogUnit: 'Túi 1,3Kg',
+      catalogPrice: 122_000,
+      requestedQuantity: 1,
+      requestedUnit: 'hộp (1,3kg)',
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.quantity).toBe(1)
+      expect(result.lineTotal).toBe(122_000)
+    }
+  })
+
+  test('accepts confirmed Hộp as one Túi 3.05Kg for Thạch Agar only', () => {
+    const result = resolveOrderLine({
+      productName: 'Thạch Agar Chuandai Nguyên Vị 3.05Kg',
+      catalogUnit: 'Túi 3.05Kg',
+      catalogPrice: 247_000,
+      requestedQuantity: 1,
+      requestedUnit: 'hộp (3,05kg)',
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.quantity).toBe(1)
+      expect(result.lineTotal).toBe(247_000)
+    }
+  })
+
+  test('does not make Hộp and Túi globally equivalent', () => {
+    const result = resolveOrderLine({
+      productName: 'Sản phẩm khác 1Kg',
+      catalogUnit: 'Túi 1Kg',
+      catalogPrice: 100_000,
+      requestedQuantity: 1,
+      requestedUnit: 'Hộp',
+    })
+    expect(result.ok).toBe(false)
+  })
+
+  test('rejects a confirmed product alias when its annotated size is wrong', () => {
+    const result = resolveOrderLine({
+      productName: 'Thạch Agar Chuandai Nguyên Vị 3.05Kg',
+      catalogUnit: 'Túi 3.05Kg',
+      catalogPrice: 247_000,
+      requestedQuantity: 1,
+      requestedUnit: 'Hộp (1kg)',
+    })
+    expect(result.ok).toBe(false)
+  })
 })
 
 describe('resolveOrderLine — measure conversion', () => {
@@ -328,6 +380,46 @@ describe('normalizeOrder', () => {
 
     expect(result.items[0]!.lineTotal).toBe(366_000)
     expect(result.totalAmount).toBe(366_000)
+  })
+
+  test('restores pending prices and clears unit warnings after staff confirms packaging', () => {
+    const result = normalizeOrder({
+      customerName: 'CF LapH - Trương Định',
+      items: [
+        {
+          name: 'BODUO Mứt Xoài 1,3Kg',
+          orderedQuantity: 1,
+          orderedUnit: 'hộp (1,3kg)',
+          quantity: 1,
+          unit: 'Túi 1,3Kg',
+          catalogPrice: 122_000,
+          unitPrice: null,
+          lineTotal: null,
+          note: '⚠️ Cần xác nhận: đơn vị "hộp (1,3kg)" không khớp quy cách "Túi 1,3Kg"',
+        },
+        {
+          name: 'Thạch Agar Chuandai Nguyên Vị 3.05Kg',
+          orderedQuantity: 1,
+          orderedUnit: 'hộp (3,05kg)',
+          quantity: 1,
+          unit: 'Túi 3.05Kg',
+          catalogPrice: 247_000,
+          unitPrice: null,
+          lineTotal: null,
+          note: '⚠️ Cần xác nhận: đơn vị "hộp (3,05kg)" không khớp quy cách "Túi 3.05Kg"',
+        },
+      ],
+      totalQuantity: 2,
+      totalAmount: 0,
+      pendingCount: 2,
+    })
+
+    expect(result.items[0]).toMatchObject({ unitPrice: 122_000, lineTotal: 122_000 })
+    expect(result.items[0]!.note).toBeUndefined()
+    expect(result.items[1]).toMatchObject({ unitPrice: 247_000, lineTotal: 247_000 })
+    expect(result.items[1]!.note).toBeUndefined()
+    expect(result.pendingCount).toBe(0)
+    expect(result.totalAmount).toBe(369_000)
   })
 
   test('flips unconvertible lines to pending and recounts', () => {

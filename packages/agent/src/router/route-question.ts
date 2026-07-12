@@ -36,6 +36,20 @@ const ORDER_INTENT_PATTERN = /\b(?:lên|len|tạo|tao|chốt|chot|đặt|dat)\s+
 const ORDER_LINE_PATTERN = /\b\d+(?:[.,]\d+)?\s*(?:hộp|hop|lon|hũ|hu|gói|goi|túi|tui|chai|lọ|lo|thùng|thung|lốc|loc|kg|gr|g|ml|lít|lit|cuộn|cuon|xâu|xau)\b/i
 export const ORDER_WORKFLOW_REASON_PREFIX = 'Order workflow'
 
+function inspectOrderShape(question: string): { isOrder: boolean, lineItemCount: number } {
+  const lines = question.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  const lineItemCount = lines.filter(line => ORDER_LINE_PATTERN.test(line)).length
+  const hasCustomerLine = lines.some(line =>
+    !ORDER_LINE_PATTERN.test(line)
+    && !ORDER_INTENT_PATTERN.test(line)
+    && !/^done[.!]?$/i.test(line),
+  )
+  return {
+    isOrder: ORDER_INTENT_PATTERN.test(question) || (lineItemCount > 0 && hasCustomerLine),
+    lineItemCount,
+  }
+}
+
 /**
  * Business workflows must not depend solely on the LLM classifier. Creating an
  * order requires customer/catalog lookup, one deterministic price calculation
@@ -43,12 +57,8 @@ export const ORDER_WORKFLOW_REASON_PREFIX = 'Order workflow'
  * structurally insufficient for multi-line orders.
  */
 export function applyRoutingGuardrails(question: string, config: AgentConfig): AgentConfig {
-  if (!ORDER_INTENT_PATTERN.test(question)) return config
-
-  const lineItemCount = question
-    .split(/\r?\n/)
-    .filter(line => ORDER_LINE_PATTERN.test(line))
-    .length
+  const { isOrder, lineItemCount } = inspectOrderShape(question)
+  if (!isOrder) return config
 
   const isLargeOrder = lineItemCount >= 5
   const minimumSteps = isLargeOrder ? 25 : 15

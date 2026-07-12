@@ -28,6 +28,13 @@ export interface ActiveSandbox {
   sessionId: string
 }
 
+export function isSandboxSessionCurrent(
+  session: Pick<SandboxSession, 'snapshotId'>,
+  currentSnapshot: Pick<SnapshotMetadata, 'snapshotId'> | null,
+): boolean {
+  return currentSnapshot === null || session.snapshotId === currentSnapshot.snapshotId
+}
+
 export const KV_KEYS = {
   CURRENT_SNAPSHOT: 'snapshot:current',
   SNAPSHOT_STATUS_CACHE: 'snapshot:status-cache',

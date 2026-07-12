@@ -36,6 +36,15 @@ export interface SourceAgentOptions {
   onFinish?: (result: any) => void
 }
 
+function selectOrderTools(tools: ToolSet): ToolSet {
+  const selected: ToolSet = {}
+  for (const name of ['resolve_bill_order', 'present_order']) {
+    const selectedTool = tools[name]
+    if (selectedTool) selected[name] = selectedTool
+  }
+  return selected
+}
+
 export function createSourceAgent({
   tools,
   getAgentConfig,
@@ -53,6 +62,10 @@ export function createSourceAgent({
   let maxSteps = 15
   let isOrderWorkflow = false
   const wrap = resolveModelWrapper()
+  const hasExistingOrder = messages.some(message => message.parts.some((part) => {
+    const { type } = part as { type?: string }
+    return type === 'tool-present_order' || type === 'tool-resolve_bill_order'
+  }))
 
   return new ToolLoopAgent<AgentCallOptions, ToolSet>({
     model: wrap(DEFAULT_MODEL),
@@ -69,9 +82,9 @@ export function createSourceAgent({
       const effectiveMaxSteps = Math.round(routerConfig.maxSteps * agentConfig.maxStepsMultiplier)
       const effectiveModel = modelOverride ?? agentConfig.defaultModel ?? defaultModel
       const customModel = await getLanguageModel?.(effectiveModel)
-      isOrderWorkflow = routerConfig.reasoning.startsWith(ORDER_WORKFLOW_REASON_PREFIX)
+      isOrderWorkflow = routerConfig.reasoning.startsWith(ORDER_WORKFLOW_REASON_PREFIX) || hasExistingOrder
       const effectiveTools = isOrderWorkflow
-        ? { ...tools }
+        ? selectOrderTools(tools)
         : { ...tools, web_search: webSearchTool }
 
       maxSteps = effectiveMaxSteps
@@ -109,16 +122,20 @@ export function createSourceAgent({
       const normalizedSteps = (steps as StepResult<ToolSet>[] | undefined) ?? []
       const compactedMessages = compactContext({ messages: stepMessages, steps: normalizedSteps })
 
-      const orderSearchCalls = normalizedSteps.reduce(
-        (count, step) => count + step.toolCalls.filter(call => call.toolName === 'bash_batch').length,
-        0,
-      )
-
-      if (isOrderWorkflow && orderSearchCalls >= 3) {
-        const activeTools = ['resolve_order_line', 'present_order'].filter(name => name in tools)
-        log.info({ event: 'agent.order_search_complete', step: stepNumber + 1, searchCalls: orderSearchCalls })
+      if (isOrderWorkflow) {
+        const resolverCalls = normalizedSteps.reduce(
+          (count, step) => count + step.toolCalls.filter(call => call.toolName === 'resolve_bill_order').length,
+          0,
+        )
+        if (resolverCalls === 0 && 'resolve_bill_order' in tools) {
+          return {
+            activeTools: ['resolve_bill_order'],
+            toolChoice: { type: 'tool' as const, toolName: 'resolve_bill_order' },
+            ...(compactedMessages !== stepMessages ? { messages: compactedMessages } : {}),
+          }
+        }
         return {
-          activeTools,
+          activeTools: ['present_order'].filter(name => name in tools),
           toolChoice: 'auto' as const,
           ...(compactedMessages !== stepMessages ? { messages: compactedMessages } : {}),
         }

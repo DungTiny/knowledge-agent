@@ -13,7 +13,9 @@ import { getAgentConfig } from '../../utils/agent-config'
 import { getModelProviderConfig, isModelProviderConfigured } from '../../utils/model-provider'
 import { KV_KEYS } from '../../utils/sandbox/types'
 import { adminTools } from '../../utils/chat/admin-tools'
-import { parseOrderLookupRequest, preloadOrderContext } from '../../utils/chat/order-context'
+import { parseOrderLookupRequest } from '../../utils/chat/order-context'
+import { createResolveBillOrderTool } from '../../utils/chat/resolve-bill-order-tool'
+import { loadBillFromSandbox } from '../../utils/chat/bill-source'
 import { checkRateLimit, incrementRateLimit } from '../../utils/rate-limit'
 import { CUSTOM_MODEL_ID } from '#shared/utils/model-provider'
 import { presentOrderTool } from '#shared/utils/tools/present-order'
@@ -36,6 +38,13 @@ async function getCustomChatModel(): Promise<LanguageModelV3 | undefined> {
 function resolveCustomLanguageModel(modelId: string): Promise<LanguageModelV3 | undefined> | undefined {
   if (modelId !== CUSTOM_MODEL_ID) return undefined
   return getCustomChatModel()
+}
+
+function hasOrderToolHistory(messages: UIMessage[]): boolean {
+  return messages.some(message => message.parts.some((part) => {
+    const { type } = part as { type?: string }
+    return type === 'tool-present_order' || type === 'tool-resolve_bill_order'
+  }))
 }
 
 export default defineEventHandler(async (event) => {
@@ -111,24 +120,23 @@ export default defineEventHandler(async (event) => {
 
     const cookie = getHeader(event, 'cookie')
     const orderLookupRequest = isAdminChat ? null : parseOrderLookupRequest(messages)
+    const isOrderWorkflow = !isAdminChat && (orderLookupRequest !== null || hasOrderToolHistory(messages))
     const savoir = createSavoir({
       apiUrl: getRequestURL(event).origin,
       headers: cookie ? { cookie } : undefined,
       sessionId: existingSessionId || undefined,
-      maxShellToolCalls: orderLookupRequest ? 3 : undefined,
+      maxShellToolCalls: isOrderWorkflow ? 0 : undefined,
     })
-    const orderContextTask = orderLookupRequest
-      ? preloadOrderContext(savoir.client, orderLookupRequest)
-        .then((context) => {
-          requestLog.set({ orderContextPreloaded: true, orderProductCount: orderLookupRequest.products.length })
-          return context
-        })
-        .catch((error) => {
-          const message = error instanceof Error ? error.message : String(error)
-          requestLog.set({ orderContextPreloaded: false, orderContextError: message })
-          return `## Internal order context preload failed\n${message}\nUse the bounded shell tools to check files/bill/BILL.md once, then present unresolved items as PENDING.`
-        })
-      : Promise.resolve<string | null>(null)
+    const resolveBillOrderTool = createResolveBillOrderTool(id as string, async () => {
+      const source = await loadBillFromSandbox(savoir.getSessionId())
+      savoir.setSessionId(source.sessionId)
+      requestLog.set({
+        billSandboxSessionId: source.sessionId,
+        billSnapshotId: source.snapshotId,
+      })
+      return source
+    })
+    requestLog.set({ orderWorkflow: isOrderWorkflow, orderProductCount: orderLookupRequest?.products.length })
 
     const agent = isAdminChat
       ? createAdminAgent({
@@ -136,7 +144,12 @@ export default defineEventHandler(async (event) => {
         getLanguageModel: resolveCustomLanguageModel,
       })
       : createSourceAgent({
-        tools: { ...savoir.tools, present_order: presentOrderTool, resolve_order_line: resolveOrderLineTool },
+        tools: {
+          ...savoir.tools,
+          resolve_bill_order: resolveBillOrderTool,
+          present_order: presentOrderTool,
+          resolve_order_line: resolveOrderLineTool,
+        },
         getAgentConfig,
         messages,
         defaultModel: model,
@@ -174,13 +187,7 @@ export default defineEventHandler(async (event) => {
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        const [modelMessages, orderContext] = await Promise.all([
-          convertToModelMessages(messages),
-          orderContextTask,
-        ])
-        if (orderContext) {
-          modelMessages.unshift({ role: 'system', content: orderContext })
-        }
+        const modelMessages = await convertToModelMessages(messages)
         const result = await agent.stream({
           messages: modelMessages,
           options: {},
