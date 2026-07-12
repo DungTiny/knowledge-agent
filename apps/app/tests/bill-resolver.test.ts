@@ -139,3 +139,78 @@ describe('BILL.md deterministic resolver', () => {
     expect(result.orderDraft).toBeNull()
   })
 })
+
+const baoKhachCustomer = ['BK001', 'Cửa Hàng Báo Khách', 'BG9']
+const baoKhachRows = [
+  // (a) đã báo 09.05.26, có đơn mua lại SAU ngày báo cùng giá → coi như khách đã đồng ý
+  [...baoKhachCustomer, 'sua-abc', 'Sữa Đặc ABC 380g', 'Hộp', '31/12/2026', '', '100000', '', '100000', 'CẬP NHẬT - BÁO KHÁCH 09.05.26'],
+  [...baoKhachCustomer, 'sua-abc', 'Sữa Đặc ABC 380g', 'Hộp', '10/06/2026', '1', '100000', '', '100000', ''],
+  // (b) đã báo 09.05.26 nhưng đơn gần nhất TRƯỚC ngày báo → chưa mua lại, cần báo lại giá
+  [...baoKhachCustomer, 'tra-q', 'Trà Q 1Kg', 'Hộp', '31/12/2026', '', '152000', '', '152000', 'CẬP NHẬT - BÁO KHÁCH 09.05.26'],
+  [...baoKhachCustomer, 'tra-q', 'Trà Q 1Kg', 'Hộp', '01/04/2026', '1', '152000', '', '152000', ''],
+  // (c) CẬP NHẬT - BÁO KHÁCH nhưng note không có ngày → giữ cảnh báo chung, vẫn resolve
+  [...baoKhachCustomer, 'cafe-r', 'Cà Phê R 500g', 'Hộp', '31/12/2026', '', '50000', '', '50000', 'CẬP NHẬT - BÁO KHÁCH'],
+  [...baoKhachCustomer, 'cafe-r', 'Cà Phê R 500g', 'Hộp', '01/07/2026', '1', '50000', '', '50000', ''],
+]
+const baoKhachIndex = parseBillMarkdown([
+  markdownRow(headers),
+  `|:${headers.map(() => '---').join('|')}|`,
+  ...baoKhachRows.map(markdownRow),
+].join('\n'))
+const baoKhachItems: RequestedOrderItem[] = [
+  { lineId: 'a', rawName: 'Sữa Đặc ABC', requestedQuantity: 1, requestedUnit: 'Hộp' },
+  { lineId: 'b', rawName: 'Trà Q', requestedQuantity: 1, requestedUnit: 'Hộp' },
+  { lineId: 'c', rawName: 'Cà Phê R', requestedQuantity: 1, requestedUnit: 'Hộp' },
+]
+
+describe('CẬP NHẬT - BÁO KHÁCH decision', () => {
+  test('resolves silently when the customer repurchased after the notified date at the same price', () => {
+    const result = resolveBillOrder(baoKhachIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'BK001',
+      items: baoKhachItems,
+    })
+
+    expect(result.lines[0]).toMatchObject({
+      status: 'resolved',
+      resolved: { unitPrice: 100_000 },
+    })
+    expect(result.lines[0]!.warning).toContain('mua lại')
+  })
+
+  test('needs price confirmation when there is no repurchase after the notified date', () => {
+    const draftId = crypto.randomUUID()
+    const initial = resolveBillOrder(baoKhachIndex, {
+      draftId,
+      customerQuery: 'BK001',
+      items: baoKhachItems,
+    })
+
+    expect(initial.lines[1]!.status).toBe('needs_price_confirmation')
+    const confirmation = initial.lines[1]!.confirmations.find(entry => entry.kind === 'price')
+    expect(confirmation).toBeDefined()
+
+    const revised = resolveBillOrder(baoKhachIndex, {
+      draftId,
+      customerQuery: 'BK001',
+      items: baoKhachItems,
+      confirmations: [{ lineId: 'b', confirmationId: confirmation!.confirmationId }],
+    })
+
+    expect(revised.lines[1]).toMatchObject({
+      status: 'resolved',
+      resolved: { unitPrice: 152_000 },
+    })
+  })
+
+  test('keeps the generic warning when the note has no notified date', () => {
+    const result = resolveBillOrder(baoKhachIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'BK001',
+      items: baoKhachItems,
+    })
+
+    expect(result.lines[2]).toMatchObject({ status: 'resolved' })
+    expect(result.lines[2]!.warning).toBe('⚠️ Bảng giá ghi CẬP NHẬT - BÁO KHÁCH')
+  })
+})

@@ -475,21 +475,49 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     return { ...base, status: 'needs_unit_confirmation', warning: calculated.warning }
   }
 
-  const updateNotice = /cập\s*nhật\s*-?\s*báo\s*khách/i.test(flags)
-    ? '⚠️ Bảng giá ghi CẬP NHẬT - BÁO KHÁCH'
-    : undefined
-  return {
-    ...base,
-    status: 'resolved',
-    resolved: {
-      quantity: calculated.quantity,
-      unit: calculated.unit,
-      catalogPrice: price,
-      unitPrice: calculated.unitPrice,
-      lineTotal: calculated.lineTotal,
-    },
-    ...(updateNotice ? { warning: updateNotice } : {}),
+  const resolved = {
+    quantity: calculated.quantity,
+    unit: calculated.unit,
+    catalogPrice: price,
+    unitPrice: calculated.unitPrice,
+    lineTotal: calculated.lineTotal,
   }
+
+  if (/cập\s*nhật\s*-?\s*báo\s*khách/i.test(flags)) {
+    const notified = flags.match(/(\d{1,2})[./](\d{1,2})[./](\d{2,4})/)
+    if (!notified) {
+      // Note flags an update but records no notified date → keep the generic notice.
+      return { ...base, status: 'resolved', resolved, warning: '⚠️ Bảng giá ghi CẬP NHẬT - BÁO KHÁCH' }
+    }
+    const [notifiedLabel] = notified
+    const year = Number(notified[3]!) < 100 ? Number(notified[3]!) + 2000 : Number(notified[3]!)
+    const notifiedDate = Date.UTC(year, Number(notified[2]!) - 1, Number(notified[1]!))
+    const repurchased = productHistory.some(row =>
+      parseDate(row['Thời gian']) >= notifiedDate && parseNumber(row['Giá bán']) === price)
+    if (repurchased) {
+      return { ...base, status: 'resolved', resolved, warning: `✅ Đã báo khách ${notifiedLabel}, khách đã mua lại — dùng giá hiện tại` }
+    }
+    const notifiedConfirmationId = `notified:${encodeURIComponent(item.lineId)}:confirmed`
+    if (confirmedIds.has(notifiedConfirmationId)) {
+      return { ...base, status: 'resolved', resolved, warning: `✅ Đã xác nhận báo khách ${notifiedLabel}, dùng giá hiện tại` }
+    }
+    return {
+      ...base,
+      status: 'needs_price_confirmation',
+      confirmations: [
+        ...base.confirmations,
+        {
+          confirmationId: notifiedConfirmationId,
+          kind: 'price' as const,
+          label: `Xác nhận đã báo khách, dùng giá ${price.toLocaleString('vi-VN')}đ`,
+          reason: `CẬP NHẬT - đã báo khách ${notifiedLabel} nhưng chưa có đơn mua lại sau đó`,
+        },
+      ],
+      warning: `⚠️ CẬP NHẬT - đã báo khách ${notifiedLabel} nhưng chưa mua lại, cần báo lại giá`,
+    }
+  }
+
+  return { ...base, status: 'resolved', resolved }
 }
 
 export function resolveBillOrder(index: BillIndex, request: ResolveBillOrderRequest): ResolveBillOrderOutput {
