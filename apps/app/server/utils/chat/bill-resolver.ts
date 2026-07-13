@@ -301,6 +301,26 @@ function businessUnitOverride(productName: string): string | null {
   )?.unit ?? null
 }
 
+function unitVariantMatches(catalogUnit: string, requestedUnit: string): boolean {
+  const requested = normalizeBillText(requestedUnit)
+  if (!requested || !catalogUnit.trim()) return false
+  if (normalizeBillText(catalogUnit) === requested) return true
+  const pack = parsePackSpec(catalogUnit)
+  return pack !== null && normalizeBillText(pack.container) === requested
+}
+
+/**
+ * One product name can hide two packaging SKUs (retail "Hộp" vs case
+ * "Thùng/12 Hộp"). When the requested unit names one of them, scope the
+ * evidence to that variant instead of letting the newest row win.
+ */
+function scopeRowsToRequestedUnit(rows: BillRow[], requestedUnit: string): BillRow[] {
+  const units = unique(rows.map(row => normalizeBillText(row['ĐVT'])).filter(Boolean))
+  if (units.length < 2) return rows
+  const matching = rows.filter(row => unitVariantMatches(row['ĐVT'], requestedUnit))
+  return matching.length > 0 ? matching : rows
+}
+
 function staticRowsForCustomer(index: BillIndex, customerCode: string): BillRow[] {
   const customerHistory = index.rows.filter(row => row['Mã khách hàng'] === customerCode && row['Thời gian'] !== BILL_STATIC_DATE)
   const priceLists = new Set(customerHistory.map(row => row['Bảng giá']).filter(Boolean))
@@ -403,8 +423,14 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   }
 
   const productKey = normalizeBillText(selectedProduct)
-  const productHistory = historyScope.filter(row => normalizeBillText(row['Tên hàng']) === productKey)
-  const productStatic = staticScope.filter(row => normalizeBillText(row['Tên hàng']) === productKey)
+  const productHistory = scopeRowsToRequestedUnit(
+    historyScope.filter(row => normalizeBillText(row['Tên hàng']) === productKey),
+    item.requestedUnit,
+  )
+  const productStatic = scopeRowsToRequestedUnit(
+    staticScope.filter(row => normalizeBillText(row['Tên hàng']) === productKey),
+    item.requestedUnit,
+  )
   const newestHistoryRows = latestRows(productHistory)
   const newest = newestHistoryRows[0] ?? productStatic[0]!
   const sku = newest['Mã hàng']

@@ -242,6 +242,50 @@ describe('ĐVT derived from the product name when the column is blank', () => {
   })
 })
 
+// The 111 Nguyễn Huệ bug: one product name, two SKUs — retail "Hộp" and case
+// "Thùng/12 Hộp". The newest row was the case SKU, so a "6 hộp" order was
+// silently billed as 0.5 thùng at the case price instead of the retail SKU.
+const packVariantCustomer = ['FB_2480', '111 Nguyễn Huệ', 'Bảng giá chung']
+const packVariantRows = [
+  [...packVariantCustomer, '(ĐG)stkd', 'Sữa Tươi Vinamilk KHÔNG Đường 1L', 'Hộp', '16/06/2026', '6', '36000', '0', '36000', ''],
+  [...packVariantCustomer, '(ĐG)stkdt', 'Sữa Tươi Vinamilk KHÔNG Đường 1L', 'Thùng/12 Hộp', '24/06/2026', '1', '420000', '0', '420000', ''],
+]
+const packVariantIndex = parseBillMarkdown([
+  markdownRow(headers),
+  `|:${headers.map(() => '---').join('|')}|`,
+  ...packVariantRows.map(markdownRow),
+].join('\n'))
+
+describe('same-name packaging variants (retail Hộp vs case Thùng/12 Hộp)', () => {
+  test('a "hộp" order picks the retail SKU even when the case row is newer', () => {
+    const result = resolveBillOrder(packVariantIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: '111 Nguyễn Huệ',
+      items: [{ lineId: '1', rawName: 'Sữa tươi vinamilk không đường', requestedQuantity: 6, requestedUnit: 'Hộp' }],
+    })
+
+    expect(result.lines[0]).toMatchObject({
+      status: 'resolved',
+      matched: { sku: '(ĐG)stkd' },
+      resolved: { quantity: 6, unit: 'Hộp', unitPrice: 36_000, lineTotal: 216_000 },
+    })
+  })
+
+  test('a "thùng" order picks the case SKU', () => {
+    const result = resolveBillOrder(packVariantIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: '111 Nguyễn Huệ',
+      items: [{ lineId: '1', rawName: 'Sữa tươi vinamilk không đường', requestedQuantity: 1, requestedUnit: 'Thùng' }],
+    })
+
+    expect(result.lines[0]).toMatchObject({
+      status: 'resolved',
+      matched: { sku: '(ĐG)stkdt' },
+      resolved: { quantity: 1, unit: 'Thùng/12 Hộp', unitPrice: 420_000, lineTotal: 420_000 },
+    })
+  })
+})
+
 const siroCustomer = ['SR001', 'CF Siro Đà Nẵng', 'BG11']
 const siroRows = [
   [...siroCustomer, 'quynhdv', 'Syrup Davinci Vải 750ml', 'Chai', '01/07/2026', '1', '190000', '', '190000', ''],

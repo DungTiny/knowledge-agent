@@ -298,6 +298,12 @@ Precedence:
 
 1. Valid non-empty unit from latest positive history.
 2. Valid static unit for the already resolved product and price-list scope.
+   When one product name covers multiple packaging SKUs (retail `Hộp` vs case
+   `Thùng/12 Hộp`, e.g. `(ĐG)stkd`/`(ĐG)stkdt` for 111 Nguyễn Huệ), the
+   requested unit selects the variant first: history/static evidence is scoped
+   to rows whose ĐVT — or pack container — matches the requested unit before
+   any latest-row selection. Newest-row-wins across variants mis-billed
+   "6 hộp" as 0.5 thùng at the case price.
 3. Versioned business override keyed by canonical product/SKU.
 4. Explicit staff confirmation stored against the draft/business override.
 5. Otherwise pending. Never infer packaging from product-name weight.
