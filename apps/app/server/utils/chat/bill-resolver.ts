@@ -230,6 +230,18 @@ function canonicalSku(sku: string): string {
   return normalizeBillText(stripped || sku)
 }
 
+/**
+ * Explicit customer-name alias dictionary: staff write "Coffee" where BILL.md
+ * stores "Cafe" ("18Grams Coffee" → 18Grams Cafe). Never semantic guessing.
+ */
+const CUSTOMER_TOKEN_SYNONYMS: Record<string, string> = {
+  coffee: 'cafe',
+}
+
+function canonicalCustomerText(value: string): string {
+  return tokens(value).map(token => CUSTOMER_TOKEN_SYNONYMS[token] ?? token).join(' ')
+}
+
 function resolveCustomer(index: BillIndex, query: string, selections: Map<string, string>) {
   const selected = selections.get('$customer')
   if (selected) {
@@ -241,12 +253,15 @@ function resolveCustomer(index: BillIndex, query: string, selections: Map<string
   const exactCode = index.customers.filter(customer => normalizeBillText(customer.code) === normalizedQuery)
   if (exactCode.length === 1) return { status: 'resolved' as const, customer: exactCode[0]!, candidates: [] }
 
-  const exactName = index.customers.filter(customer => normalizeBillText(customer.name) === normalizedQuery)
+  const canonicalQuery = canonicalCustomerText(query)
+  const exactName = index.customers.filter(customer => canonicalCustomerText(customer.name) === canonicalQuery)
   if (exactName.length === 1) return { status: 'resolved' as const, customer: exactName[0]!, candidates: [] }
 
-  const queryTokens = tokens(query).filter(token => !/^\d+$/.test(token))
+  const queryTokens = tokens(query)
+    .filter(token => !/^\d+$/.test(token))
+    .map(token => CUSTOMER_TOKEN_SYNONYMS[token] ?? token)
   const matches = index.customers.filter((customer) => {
-    const normalizedName = normalizeBillText(customer.name)
+    const normalizedName = canonicalCustomerText(customer.name)
     return queryTokens.length > 0 && queryTokens.every(token => normalizedName.includes(token))
   })
 
@@ -335,6 +350,20 @@ function latestRows(rows: BillRow[]): BillRow[] {
   const sorted = [...rows].sort((a, b) => parseDate(b['Thời gian']) - parseDate(a['Thời gian']))
   const latestDate = sorted[0]!['Thời gian']
   return sorted.filter(row => row['Thời gian'] === latestDate)
+}
+
+/**
+ * Price evidence: the newest priced purchase date in the customer's entire
+ * history of the product. The newest purchase sometimes carries no numeric
+ * price; any earlier priced purchase is still current-price evidence and
+ * beats the static price list. Newest price wins when several exist.
+ */
+function newestPricedRows(rows: BillRow[]): BillRow[] {
+  const priced = rows.filter((row) => {
+    const price = parseNumber(row['Giá bán'])
+    return price !== null && price > 0
+  })
+  return latestRows(priced)
 }
 
 function warningText(rows: BillRow[]): string {
@@ -436,7 +465,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   const sku = newest['Mã hàng']
   const matched = { sku, canonicalSku: canonicalSku(sku), productName: newest['Tên hàng'] }
 
-  const historyPrices = unique(newestHistoryRows.map(row => parseNumber(row['Giá bán'])).filter((price): price is number => price !== null && price > 0))
+  const historyPrices = unique(newestPricedRows(productHistory).map(row => parseNumber(row['Giá bán'])).filter((price): price is number => price !== null && price > 0))
   const staticPrices = unique(productStatic.map(row => parseNumber(row['Giá bán'])).filter((price): price is number => price !== null && price > 0))
   const price = historyPrices.length === 1
     ? historyPrices[0]!

@@ -2,8 +2,12 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import type { UIToolInvocation } from 'ai'
 import { normalizeOrder } from '../uom'
+import type { OrderDraft } from '../uom'
 
 export type PresentOrderUIToolInvocation = UIToolInvocation<typeof presentOrderTool>
+
+/** Loads the resolver's stored orderDraft for a draftId; null when unknown/expired. */
+export type LoadStoredOrderDraft = (draftId: string) => Promise<OrderDraft | null>
 
 const orderItemSchema = z.object({
   name: z.string().describe('Standardized product name (from the catalog/history), not the customer\'s abbreviation'),
@@ -19,17 +23,33 @@ const orderItemSchema = z.object({
   note: z.string().optional().describe('Reason the line is pending (e.g. "⚠️ Cần xác nhận loại") or other remark'),
 })
 
-export const presentOrderTool = tool({
-  description: 'Present a structured order/bill draft to the customer service staff for confirmation. Use this INSTEAD of a markdown table whenever you have finished resolving an order\'s line items (whether or not some lines are still pending clarification). The UI renders this as an interactive card with "Đồng ý lên bill" and "Cần thay đổi" buttons. All prices and totals are recomputed server-side from the catalog unit price and pack-size conversion.',
-  inputSchema: z.object({
-    customerName: z.string().describe('Customer display name, e.g. "CF LapH - Quốc Học"'),
-    customerCode: z.string().optional().describe('Customer code (Mã khách hàng), if known'),
-    items: z.array(orderItemSchema).min(1),
-    totalQuantity: z.number().describe('Sum of quantity across ALL lines, including pending ones — recomputed server-side'),
-    totalAmount: z.number().describe('Sum of lineTotal across only the RESOLVED lines (pending lines excluded) — recomputed server-side'),
-    pendingCount: z.number().int().min(0).describe('Number of lines with unitPrice/lineTotal = null — recomputed server-side'),
-  }),
-  // The model's arithmetic is never trusted: quantities are re-derived from the
-  // ĐVT pack spec and every total is recomputed before rendering the card/PDF.
-  execute: input => normalizeOrder(input),
-})
+export function createPresentOrderTool(loadStoredDraft?: LoadStoredOrderDraft) {
+  return tool({
+    description: 'Present a structured order/bill draft to the customer service staff for confirmation. Use this INSTEAD of a markdown table whenever you have finished resolving an order\'s line items (whether or not some lines are still pending clarification). The UI renders this as an interactive card with "Đồng ý lên bill" and "Cần thay đổi" buttons. When the order came from resolve_bill_order, ALWAYS pass its draftId: the server then renders the stored resolver draft and any names/prices/totals you type here are ignored. All prices and totals are recomputed server-side from the catalog unit price and pack-size conversion.',
+    inputSchema: z.object({
+      draftId: z.string().uuid().optional().describe('draftId returned by resolve_bill_order. Always pass it for BILL orders — the server renders the exact stored resolver draft instead of your copy'),
+      customerName: z.string().describe('Customer display name, e.g. "CF LapH - Quốc Học"'),
+      customerCode: z.string().optional().describe('Customer code (Mã khách hàng), if known'),
+      items: z.array(orderItemSchema).min(1),
+      totalQuantity: z.number().describe('Sum of quantity across ALL lines, including pending ones — recomputed server-side'),
+      totalAmount: z.number().describe('Sum of lineTotal across only the RESOLVED lines (pending lines excluded) — recomputed server-side'),
+      pendingCount: z.number().int().min(0).describe('Number of lines with unitPrice/lineTotal = null — recomputed server-side'),
+    }),
+    // The model is not a trust boundary between resolve_bill_order and this card:
+    // it once re-typed a 135.000đ resolver price as 150.000đ. With a draftId the
+    // stored resolver draft is rendered instead of the model's copy; without one,
+    // quantities are re-derived from the ĐVT pack spec and totals recomputed.
+    execute: async ({ draftId, ...input }) => {
+      if (draftId && loadStoredDraft) {
+        const stored = await loadStoredDraft(draftId)
+        if (!stored) {
+          throw new Error(`Order draft not found or expired: ${draftId} — call resolve_bill_order again and present its new orderDraft`)
+        }
+        return normalizeOrder(stored)
+      }
+      return normalizeOrder(input)
+    },
+  })
+}
+
+export const presentOrderTool = createPresentOrderTool()

@@ -2,7 +2,7 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import { kv } from '@nuxthub/kv'
 import { parseBillMarkdown, resolveBillOrder } from './bill-resolver'
-import type { BillIndex, BillOrderConfirmation, BillOrderSelection, RequestedOrderItem } from './bill-resolver'
+import type { BillIndex, BillOrderConfirmation, BillOrderSelection, RequestedOrderItem, ResolvedOrderDraft } from './bill-resolver'
 import type { SandboxBillSource } from './bill-source'
 
 const requestedItemSchema = z.object({
@@ -39,6 +39,19 @@ interface StoredBillDraft {
   items: RequestedOrderItem[]
   selections: BillOrderSelection[]
   confirmations: BillOrderConfirmation[]
+  // The resolver's latest output for this draft. present_order renders this
+  // instead of the model's re-typed copy — the model is not a trust boundary.
+  orderDraft?: ResolvedOrderDraft | null
+}
+
+function draftKey(chatId: string, draftId: string): string {
+  return `order:draft:${chatId}:${draftId}`
+}
+
+/** The resolver draft stored for a draftId, for present_order; null when unknown. */
+export async function loadStoredOrderDraft(chatId: string, draftId: string): Promise<ResolvedOrderDraft | null> {
+  const stored = await kv.get<StoredBillDraft>(draftKey(chatId, draftId))
+  return stored?.orderDraft ?? null
 }
 
 function mergeByKey<T>(current: T[], incoming: T[], key: (value: T) => string): T[] {
@@ -57,7 +70,7 @@ export function createResolveBillOrderTool(
     execute: async (input) => {
       const start = Date.now()
       const draftId = input.draftId ?? crypto.randomUUID()
-      const key = `order:draft:${chatId}:${draftId}`
+      const key = draftKey(chatId, draftId)
       const stored = input.draftId ? await kv.get<StoredBillDraft>(key) : null
       if (input.draftId && !stored) {
         throw new Error(`Order draft not found or expired: ${input.draftId}`)
@@ -86,7 +99,7 @@ export function createResolveBillOrderTool(
         draftId,
         ...state,
       })
-      await kv.set(key, state)
+      await kv.set(key, { ...state, orderDraft: output.orderDraft })
 
       const summary = output.customer.status !== 'resolved'
         ? `Customer ${output.customer.status}; ${output.customer.candidates.length} candidate(s)`

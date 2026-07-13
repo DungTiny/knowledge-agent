@@ -385,3 +385,65 @@ describe('staff confirmation for a requested unit the catalog does not know', ()
     expect(result.lines[0]!.confirmations).toHaveLength(0)
   })
 })
+
+const gramsCustomer = ['FB_8074', '18Grams Cafe', 'Bảng giá chung']
+const gramsRows = [
+  [...gramsCustomer, '(GK)xla', 'Sữa Đặc NSPN XANH LÁ 1.284kg', 'Hộp', '04/07/2026', '2', '65000', '', '65000', ''],
+  [...gramsCustomer, '(GK)xla', 'Sữa Đặc NSPN XANH LÁ 1.284kg', 'Hộp', '22/06/2026', '3', '65000', '', '65000', ''],
+  // Sữa tươi: the newest purchase row carries no numeric price; the priced row
+  // 12 days earlier in the customer's history is still current-price evidence.
+  [...gramsCustomer, '(ĐG-BB)SP82444', 'Sữa Tươi Nguyên Chất WESTERN (Fat 3.8%)', 'Hộp', '04/07/2026', '6', '', '', '', 'giao kèm đơn'],
+  [...gramsCustomer, '(ĐG-BB)SP82444', 'Sữa Tươi Nguyên Chất WESTERN (Fat 3.8%)', 'Hộp', '22/06/2026', '6', '34000', '', '34000', ''],
+  // Matcha: the only priced purchase is months before the newest one. The full
+  // customer history is evidence, so it still beats the static price list.
+  [...gramsCustomer, '(ĐG-BB)mcha', 'Bột Matcha IMO 100gr', 'Gói', '04/07/2026', '1', '', '', '', ''],
+  [...gramsCustomer, '(ĐG-BB)mcha', 'Bột Matcha IMO 100gr', 'Gói', '03/04/2026', '1', '130000', '', '130000', ''],
+  [...gramsCustomer, '(ĐG-BB)mcha', 'Bột Matcha IMO 100gr', 'Gói', '31/12/2026', '', '135000', '', '135000', ''],
+]
+const gramsIndex = parseBillMarkdown([
+  markdownRow(headers),
+  `|:${headers.map(() => '---').join('|')}|`,
+  ...gramsRows.map(markdownRow),
+].join('\n'))
+
+describe('customer name alias: coffee = cafe', () => {
+  test('resolves "18Grams Coffee" to the 18Grams Cafe customer code', () => {
+    const result = resolveBillOrder(gramsIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: '18Grams Coffee',
+      items: [{ lineId: '1', rawName: 'sữa tươi western', requestedQuantity: 6, requestedUnit: 'Hộp' }],
+    })
+
+    expect(result.customer).toMatchObject({ status: 'resolved', code: 'FB_8074', name: '18Grams Cafe' })
+  })
+})
+
+describe('full purchase history instead of the single newest purchase date', () => {
+  test('an unpriced newest purchase falls back to the newest priced row in history', () => {
+    const result = resolveBillOrder(gramsIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: '18Grams Coffee',
+      items: [{ lineId: '1', rawName: 'sữa tươi western', requestedQuantity: 6, requestedUnit: 'Hộp' }],
+    })
+
+    expect(result.lines[0]).toMatchObject({
+      status: 'resolved',
+      evidence: { priceSource: 'latest_positive_history' },
+      resolved: { quantity: 6, unitPrice: 34_000, lineTotal: 204_000 },
+    })
+  })
+
+  test('a months-old priced purchase is still history evidence and beats the static price', () => {
+    const result = resolveBillOrder(gramsIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: '18Grams Coffee',
+      items: [{ lineId: '1', rawName: 'matcha imo', requestedQuantity: 1, requestedUnit: 'Gói' }],
+    })
+
+    expect(result.lines[0]).toMatchObject({
+      status: 'resolved',
+      evidence: { priceSource: 'latest_positive_history' },
+      resolved: { quantity: 1, unitPrice: 130_000, lineTotal: 130_000 },
+    })
+  })
+})

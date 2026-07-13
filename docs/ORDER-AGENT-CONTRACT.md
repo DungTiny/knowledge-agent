@@ -39,13 +39,22 @@ Initial order:
 
 1. `resolve_bill_order` exactly once.
 2. If the customer is unresolved, ask one customer clarification and stop.
-3. Otherwise call `present_order` exactly once with `orderDraft` returned by the
-   resolver, including pending lines.
+3. Otherwise call `present_order` exactly once with the resolver's `draftId`
+   and `orderDraft`, including pending lines.
 
 Follow-up confirmation/change:
 
 1. Call `resolve_bill_order` with `draftId` and candidate/confirmation IDs.
-2. Call `present_order` exactly once with the new returned `orderDraft`.
+2. Call `present_order` exactly once with the same `draftId` and the new
+   returned `orderDraft`.
+
+`present_order` is not allowed to trust the model's copy: the resolver stores
+each draft's `orderDraft` server-side keyed by chat + draftId, and
+`present_order` with a `draftId` renders that stored draft — re-typed names,
+prices, and totals in the model arguments are ignored. This exists because the
+model once presented a 135,000đ resolver price as 150,000đ. An unknown/expired
+draftId is a hard error telling the model to re-run `resolve_bill_order`, not a
+silent fallback to the model's numbers.
 
 Do not call `bash`, `bash_batch`, `web_search`, or one calculator tool per item
 for an order workflow. Parsing, matching, precedence, unit conversion, and
@@ -75,9 +84,11 @@ LUỒNG BẮT BUỘC
    items đúng như người dùng nhập.
 2. Nếu customer.status là ambiguous hoặc not_found: hỏi đúng một câu để chọn
    khách hàng; không gọi present_order.
-3. Nếu customer đã resolved: gọi present_order đúng một lần, truyền nguyên văn
-   orderDraft do resolve_bill_order trả về. Không sửa tên, mã, ĐVT, giá, số
-   lượng quy đổi, thành tiền, cảnh báo hoặc tổng tiền.
+3. Nếu customer đã resolved: gọi present_order đúng một lần, truyền draftId và
+   nguyên văn orderDraft do resolve_bill_order trả về. Server render bản draft
+   đã lưu theo draftId — mọi tên, giá, tổng tiền bạn gõ lại đều bị bỏ qua.
+   Không sửa tên, mã, ĐVT, giá, số lượng quy đổi, thành tiền, cảnh báo hoặc
+   tổng tiền.
 4. Dòng needs_confirmation vẫn phải xuất hiện trong present_order với
    unitPrice/lineTotal = null và note đúng từ tool.
 5. Khi người dùng xác nhận hoặc yêu cầu thay đổi: gọi lại resolve_bill_order với
@@ -89,8 +100,14 @@ LUỒNG BẮT BUỘC
 QUY TẮC KHÔNG ĐƯỢC VI PHẠM
 - Mã khách hàng là khóa chính. Không trộn lịch sử giữa các chi nhánh hoặc hai
   mã có cùng tên hiển thị.
+- Nhân viên có thể gõ "Coffee" cho khách BILL.md ghi "Cafe" (vd "18Grams
+  Coffee" → 18Grams Cafe). Truyền customerQuery nguyên văn; tool tự ánh xạ
+  alias, không được coi là khách lạ.
 - Lịch sử thực chỉ gồm ngày khác 31/12/2026 và số lượng số học > 0, sau khi loại
   bỏ dòng trùng. Số lượng âm, rỗng hoặc dạng chữ không phải bằng chứng sở thích.
+- Bằng chứng sở thích và giá tính theo toàn bộ lịch sử mua của khách hàng đó
+  (lần mua có giá gần nhất thắng), không phải chỉ theo ngày mua gần nhất. Việc
+  này do tool thực hiện; không tự suy luận lại từ "đơn gần nhất".
 - Dòng 31/12/2026 là bảng giá/quy tắc tĩnh: chỉ dùng sau khi SKU/biến thể đã được
   xác định từ khách hàng hoặc để đưa ra lựa chọn xác nhận. Không dùng nó để đoán
   khách thường mua loại nào.
@@ -106,6 +123,10 @@ PHẢN HỒI
   nhận." Không lặp chi tiết đơn trong text.
 - Nếu cần xác nhận: hỏi đúng các candidate/confirmation mà tool trả về; không tự
   tạo thêm lựa chọn.
+- Nếu nhân viên hỏi VÌ SAO chọn giá/loại/ĐVT: chỉ trả lời từ output resolver đã
+  nhận (evidence.rowDates, priceSource, candidates, warning). Không bịa dòng
+  BILL.md, ngày hoặc giá; không tự đọc BILL.md. Thiếu chi tiết thì nói thiếu và
+  đề nghị resolve lại.
 ```
 
 ## `resolve_bill_order` input schema
@@ -263,6 +284,12 @@ Precedence:
    as `04` from `04 Trương Định`.
 4. Otherwise return customer candidates; never merge codes.
 
+Name matching canonicalizes an explicit customer alias dictionary
+(`CUSTOMER_TOKEN_SYNONYMS` in `bill-resolver.ts`) on both sides before
+comparing: `coffee` → `cafe`, so "18Grams Coffee" resolves to `18Grams Cafe`
+(FB_8074). The agent passes `customerQuery` exactly as typed; the mapping runs
+server-side only and is never semantic guessing.
+
 ### 3. Resolve variant only inside the customer scope
 
 - Preference evidence is a deduplicated row for the resolved customer code,
@@ -275,6 +302,8 @@ Precedence:
   passes `rawName` exactly as entered; the mapping runs server-side only.
 - A `dùng loại này` static rule wins.
 - If a generic request matches one positive-history variant, select it.
+- Preference evidence is the customer's entire deduplicated positive history,
+  not just the most recent purchase date.
 - If multiple variants remain and recency/frequency disagree, return candidates
   instead of guessing.
 - After the standardized product is known, static lookup may bridge raw SKU
@@ -283,8 +312,12 @@ Precedence:
 
 ### 4. Resolve price
 
-1. Latest deduplicated positive real-history row for customer + resolved
-   product/variant with numeric `Giá bán > 0`.
+1. The newest priced purchase date in the customer's entire history of the
+   resolved product/variant: deduplicated real history, numeric `Giá bán > 0`.
+   The newest purchase row sometimes carries no numeric price; any earlier
+   priced purchase is still current-price evidence and beats the static price
+   list. Newest price wins when several exist, and two different prices on the
+   same newest priced date remain a confirmation.
 2. If no such row exists, use a matching static price row only after the product
    is resolved. Exact customer static rows come first; an explicitly linked
    price-list family such as `Hệ Thống Laph` comes next.

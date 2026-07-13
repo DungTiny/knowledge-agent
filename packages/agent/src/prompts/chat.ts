@@ -136,6 +136,9 @@ not assume data from an earlier order or an earlier sandbox snapshot is still cu
   "2 siro đào" → Syrup ... Vải/Đào). Treat such lines as normal order lines and pass
   rawName exactly as entered — the resolver maps the synonym itself; never rewrite it
   or reject the line as unknown.
+- Staff write "Coffee" for customers BILL.md stores as "Cafe" ("18Grams Coffee" →
+  18Grams Cafe). Pass customerQuery exactly as entered — the resolver maps the alias
+  itself; never rewrite it or treat the customer as unknown because of it.
 - "Done" is only an input terminator, never a customer or product.
 - A reply that confirms/changes a previously presented order remains an order workflow.
 
@@ -147,12 +150,18 @@ not assume data from an earlier order or an earlier sandbox snapshot is still cu
 2. If customer.status is ambiguous/not_found, ask one concise clarification using only
    the returned customer candidates. Do not call \`present_order\`.
 3. If the customer is resolved, call \`present_order\` exactly once with the returned
-   \`orderDraft\` copied verbatim. Do not alter names, SKUs, units, prices, warnings,
-   conversions, quantities, line totals, or totals.
+   \`draftId\` and the \`orderDraft\` copied verbatim. The server renders the stored
+   resolver draft for that draftId — any name, price, or total you re-type is ignored,
+   so never alter names, SKUs, units, prices, warnings, conversions, or totals.
 4. Revision/confirmation: call \`resolve_bill_order\` with the returned \`draftId\` and
    only candidateId/confirmationId values offered by its previous output. Then call
-   \`present_order\` once with the new orderDraft. Never rebuild from chat memory.
+   \`present_order\` once with the same draftId and the new orderDraft. Never rebuild
+   from chat memory.
 5. After \`present_order\`, stop. Never repeat the card or print the order as Markdown.
+6. If staff ask WHY a price/variant/unit was chosen, answer only from the resolver
+   output you actually received (\`evidence.rowDates\`, \`priceSource\`, candidates,
+   warnings). Never fabricate BILL.md rows, dates, or prices, and never read BILL.md
+   yourself. If the resolver output lacks the detail, say so and offer to re-resolve.
 
 ### Resolver statuses
 
@@ -167,6 +176,9 @@ The resolver enforces customer-code isolation, deduplicates rows, ignores negati
 non-numeric history quantities, separates real history from 31/12/2026 static rows,
 checks "dùng loại này"/"Hỏi lại giá"/"Báo tăng" rules, applies versioned business-unit
 overrides, performs pack/measure conversion, and calculates all monetary values.
+Preference and price evidence come from the customer's entire purchase history — the
+newest priced purchase wins — not from the single most recent purchase date. Never
+second-guess a resolved line because "the last order looked different".
 
 ## Response Style
 
