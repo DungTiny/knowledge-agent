@@ -58,6 +58,7 @@ export default defineNuxtConfig({
   },
 
   devtools: { enabled: true },
+  sourcemap: false,
 
   $development: {
     vite: {
@@ -106,7 +107,10 @@ export default defineNuxtConfig({
   },
 
   hub: {
-    db: 'postgresql',
+    db: {
+      dialect: 'postgresql',
+      applyMigrationsDuringBuild: false
+    },
     kv: true,
     blob: true,
     cache: true
