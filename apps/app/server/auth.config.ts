@@ -1,6 +1,5 @@
 import { admin } from 'better-auth/plugins'
 import { apiKey } from '@better-auth/api-key'
-import { schema } from '@nuxthub/db'
 import { count, eq } from 'drizzle-orm'
 import { defineServerAuth } from '@onmax/nuxt-better-auth/config'
 
@@ -9,7 +8,7 @@ export default defineServerAuth(({ db }) => {
     emailAndPassword: {
       enabled: true,
     },
-    socialProviders: {
+ socialProviders: {
       github: {
         clientId: process.env.GITHUB_CLIENT_ID || '',
         clientSecret: process.env.GITHUB_CLIENT_SECRET || '',
@@ -46,6 +45,7 @@ export default defineServerAuth(({ db }) => {
       user: {
         create: {
           after: async (user: { id: string }) => {
+            const { schema } = await import('@nuxthub/db')
             const result = await db.select({ total: count() }).from(schema.user)
             if (result[0]!.total === 1) {
               await db.update(schema.user).set({ role: 'admin' }).where(eq(schema.user.id, user.id))

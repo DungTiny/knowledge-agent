@@ -26,8 +26,25 @@ interface VercelSnapshot {
   expiresAt: number
 }
 
+function getVercelSandboxCredentials() {
+  const token = process.env.VERCEL_TOKEN
+  const teamId = process.env.VERCEL_TEAM_ID
+  const projectId = process.env.VERCEL_PROJECT_ID
+
+  if (!token || !teamId || !projectId) {
+    throw createError({
+      status: 500,
+      message: 'Missing Vercel Sandbox credentials',
+      why: 'VERCEL_TOKEN, VERCEL_TEAM_ID, or VERCEL_PROJECT_ID is not set in the environment',
+      fix: 'Set these env vars in your .env / docker-compose env_file for this service',
+    })
+  }
+
+  return { token, teamId, projectId }
+}
+
 export async function listSnapshots(): Promise<VercelSnapshot[]> {
-  const result = await Snapshot.list()
+  const result = await Snapshot.list(getVercelSandboxCredentials())
   return result.json.snapshots
 }
 
@@ -94,7 +111,7 @@ export async function syncToSnapshot(snapshotId?: string): Promise<SnapshotMetad
     targetSnapshotId = latest.id
   }
 
-  const snapshot = await Snapshot.get({ snapshotId: targetSnapshotId })
+  const snapshot = await Snapshot.get({ snapshotId: targetSnapshotId, ...getVercelSandboxCredentials(), })
   const snapshotConfig = await getSnapshotRepoConfig()
 
   const metadata: SnapshotMetadata = {
