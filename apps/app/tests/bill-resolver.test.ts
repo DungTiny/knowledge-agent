@@ -214,3 +214,94 @@ describe('CẬP NHẬT - BÁO KHÁCH decision', () => {
     expect(result.lines[2]!.warning).toBe('⚠️ Bảng giá ghi CẬP NHẬT - BÁO KHÁCH')
   })
 })
+
+const noUnitCustomer = ['NU001', 'Cửa Hàng Không ĐVT', 'BG10']
+const noUnitRows = [
+  // ĐVT column blank, but the packaging + size is written into the product name.
+  [...noUnitCustomer, 'mut-chunky', 'Mứt Chunky Vải, Hoa Hồng Túi 1Kg', '', '01/07/2026', '1', '177000', '', '177000', ''],
+]
+const noUnitIndex = parseBillMarkdown([
+  markdownRow(headers),
+  `|:${headers.map(() => '---').join('|')}|`,
+  ...noUnitRows.map(markdownRow),
+].join('\n'))
+
+describe('ĐVT derived from the product name when the column is blank', () => {
+  test('bills "1 kg" of "... Túi 1Kg" as 1 Túi instead of stalling on a missing ĐVT', () => {
+    const result = resolveBillOrder(noUnitIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'NU001',
+      items: [{ lineId: '1', rawName: 'Mứt Chunky Vải, Hoa Hồng', requestedQuantity: 1, requestedUnit: 'kg' }],
+    })
+
+    expect(result.lines[0]).toMatchObject({
+      status: 'resolved',
+      evidence: { unitSource: 'product_name' },
+      resolved: { unit: 'Túi 1Kg', quantity: 1, unitPrice: 177_000, lineTotal: 177_000 },
+    })
+  })
+})
+
+const mismatchCustomer = ['MC001', '43 House CF', 'BG7']
+const mismatchRows = [
+  [...mismatchCustomer, 'tran-chau-trang', 'Trân Châu 3Q Talinh Trắng', 'Gói', '01/07/2026', '1', '45000', '', '45000', ''],
+  [...mismatchCustomer, 'richs-lanh', 'Kem Béo Thực Vật Richs 454G', 'Thùng/24 Hộp', '01/07/2026', '1', '705000', '', '705000', ''],
+]
+const mismatchIndex = parseBillMarkdown([
+  markdownRow(headers),
+  `|:${headers.map(() => '---').join('|')}|`,
+  ...mismatchRows.map(markdownRow),
+].join('\n'))
+
+describe('staff confirmation for a requested unit the catalog does not know', () => {
+  // The bug: the resolver flagged "1 bì" of a "Gói" product pending but issued no
+  // confirmationId, so no staff confirmation could ever clear it — the order looped.
+  test('offers a 1:1 unit confirmation instead of a dead-end pending line', () => {
+    const result = resolveBillOrder(mismatchIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MC001',
+      items: [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 1, requestedUnit: 'bì' }],
+    })
+
+    const line = result.lines[0]!
+    expect(line.status).toBe('needs_unit_confirmation')
+    expect(line.confirmations).toHaveLength(1)
+    expect(line.confirmations[0]).toMatchObject({ kind: 'unit' })
+    expect(line.confirmations[0]!.confirmationId).toBeTruthy()
+  })
+
+  test('resolves the line 1:1 once staff sends the confirmationId back', () => {
+    const draftId = crypto.randomUUID()
+    const items = [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 2, requestedUnit: 'bì' }]
+    const pending = resolveBillOrder(mismatchIndex, { draftId, customerQuery: 'MC001', items })
+    const { confirmationId } = pending.lines[0]!.confirmations[0]!
+
+    const confirmed = resolveBillOrder(mismatchIndex, {
+      draftId,
+      customerQuery: 'MC001',
+      items,
+      confirmations: [{ lineId: '1', confirmationId }],
+    })
+
+    expect(confirmed.lines[0]).toMatchObject({
+      status: 'resolved',
+      evidence: { unitSource: 'staff_confirmation' },
+      resolved: { quantity: 2, unit: 'Gói', unitPrice: 45_000, lineTotal: 90_000 },
+    })
+    expect(confirmed.resolutionStatus).toBe('resolved')
+    expect(confirmed.orderDraft).toMatchObject({ pendingCount: 0, totalAmount: 90_000 })
+    // present_order re-normalizes the draft, so the confirmation must travel with it.
+    expect(confirmed.orderDraft!.items[0]).toMatchObject({ unitConfirmed: true })
+  })
+
+  test('never offers a 1:1 mapping for a fractional pack line (would mis-bill 5 Hộp as 5 Thùng)', () => {
+    const result = resolveBillOrder(mismatchIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MC001',
+      items: [{ lineId: '1', rawName: 'Richs', requestedQuantity: 5, requestedUnit: 'Hộp' }],
+    })
+
+    expect(result.lines[0]!.status).toBe('needs_unit_confirmation')
+    expect(result.lines[0]!.confirmations).toHaveLength(0)
+  })
+})

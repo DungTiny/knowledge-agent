@@ -214,6 +214,7 @@ interface ResolveBillOrderOutput {
       catalogPrice: number
       unitPrice: number
       lineTotal: number
+      unitConfirmed?: boolean
     }
     warning?: string
   }>
@@ -227,6 +228,7 @@ interface ResolveBillOrderOutput {
       orderedUnit: string
       quantity: number
       unit: string
+      unitConfirmed?: boolean
       catalogPrice?: number
       unitPrice: number | null
       lineTotal: number | null
@@ -295,6 +297,16 @@ Precedence:
 3. Versioned business override keyed by canonical product/SKU.
 4. Explicit staff confirmation stored against the draft/business override.
 5. Otherwise pending. Never infer packaging from product-name weight.
+
+When the catalog ĐVT is known but the customer ordered in a unit the resolver
+cannot convert ("1 bì" of a product listed as "Gói"), the line is pending AND
+the resolver issues a `unit:<lineId>:requested-equals-catalog` confirmation.
+Sending that ID back bills the line 1:1 in the catalog unit and sets
+`unitConfirmed: true` on the draft item, so `present_order` does not re-flag it.
+A fractional pack failure ("5 Hộp" of "Thùng/24 Hộp") is never offered as a 1:1
+mapping — that would bill 5 thùng. Every pending line must carry either a
+candidate or a confirmation; a pending line with neither is a dead end that no
+staff reply can clear.
 
 Unit conversion and totals must run in server code. Product-specific aliases
 must not become global synonyms. Wrong annotated sizes must be rejected.

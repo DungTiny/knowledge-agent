@@ -107,6 +107,36 @@ export function parseSizedUnit(unit: string): SizedUnit {
 }
 
 /**
+ * Packaging container nouns that can carry a size inside a product name,
+ * e.g. "... Túi 1Kg". Kept deliberately small — only nouns that are genuine
+ * packaging, so a descriptive word before a size ("Lộc Phát 1Kg") is not
+ * mistaken for a ĐVT.
+ */
+const CONTAINER_UNIT_WORDS = ['túi', 'gói', 'hộp', 'lon', 'chai', 'lọ', 'hũ', 'hủ', 'bịch', 'can', 'thùng', 'lốc', 'xâu', 'cuộn', 'khay', 'vỉ', 'bao']
+
+// "<container> <number><measure>" anywhere in a product name, e.g. "Túi 1Kg", "Chai 1.5L".
+// Longer measures first so "gram" is not shadowed by "g"; \b stops "1kg" leaking into a word.
+const NAME_UNIT_RE = new RegExp(
+  `(${CONTAINER_UNIT_WORDS.join('|')})\\s*(\\d+(?:[.,]\\d+)?)\\s*(${Object.keys(MEASURE_FACTORS).sort((a, b) => b.length - a.length).join('|')})\\b`,
+  'giu',
+)
+
+/**
+ * Some price lists leave the ĐVT column blank but write the packaging size into
+ * the product name, e.g. "Mứt Chunky Vải, Hoa Hồng Túi 1Kg". Pull that trailing
+ * packaging phrase out ("Túi 1Kg") so the line can bill as a sized unit instead
+ * of stalling on a missing ĐVT. Returns the phrase verbatim, or null when the
+ * name carries no recognisable packaging + measure.
+ */
+export function unitFromProductName(name: string): string | null {
+  const matches = [...name.matchAll(NAME_UNIT_RE)]
+  const last = matches.at(-1)
+  if (!last) return null
+  const candidate = last[0].replace(/\s+/g, ' ').trim()
+  return parseSizedUnit(candidate).measureBase === null ? null : candidate
+}
+
+/**
  * Packaging aliases confirmed by the business for specific products only.
  * Hộp and Túi must not become global synonyms because that would mis-bill
  * unrelated products.
@@ -186,6 +216,13 @@ export interface ResolveOrderLineInput {
   requestedUnit?: string
 }
 
+/**
+ * Why a line could not be billed. Callers must treat these differently:
+ * only `unit_mismatch` may be cleared by a staff 1:1 unit mapping — mapping a
+ * `fraction` failure 1:1 would bill 5 Hộp as 5 Thùng.
+ */
+export type ResolveOrderLineFailure = 'invalid_input' | 'unit_mismatch' | 'fraction'
+
 export type ResolveOrderLineResult =
   | {
     ok: true
@@ -197,7 +234,7 @@ export type ResolveOrderLineResult =
     /** Human-readable conversion, e.g. "12 Hộp = 0.5 × Thùng/24 Hộp" */
     conversion: string
   }
-  | { ok: false, warning: string }
+  | { ok: false, reason: ResolveOrderLineFailure, warning: string }
 
 /** Whole or half containers only. Returns the snapped quantity, or null if it isn't a 0.5 multiple. */
 function toHalfStep(quantity: number): number | null {
@@ -225,10 +262,10 @@ export function resolveOrderLine(input: ResolveOrderLineInput): ResolveOrderLine
   const { productName, catalogUnit, catalogPrice, requestedQuantity, requestedUnit } = input
 
   if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
-    return { ok: false, warning: `Cần xác nhận: số lượng không hợp lệ (${requestedQuantity})` }
+    return { ok: false, reason: 'invalid_input', warning: `Cần xác nhận: số lượng không hợp lệ (${requestedQuantity})` }
   }
   if (!Number.isFinite(catalogPrice) || catalogPrice < 0) {
-    return { ok: false, warning: `Cần xác nhận: đơn giá không hợp lệ (${catalogPrice})` }
+    return { ok: false, reason: 'invalid_input', warning: `Cần xác nhận: đơn giá không hợp lệ (${catalogPrice})` }
   }
 
   const pack = parsePackSpec(catalogUnit)
@@ -248,7 +285,7 @@ export function resolveOrderLine(input: ResolveOrderLineInput): ResolveOrderLine
   if (pack && pack.subUnit && unitsEquivalent(requestedUnit!, pack.subUnit)) {
     const quantity = toHalfStep(requestedQuantity / pack.count)
     if (quantity === null) {
-      return { ok: false, warning: `Cần xác nhận: ${requestedQuantity} ${requestedUnit} lẻ so với quy cách ${catalogUnit} (chỉ bán nguyên hoặc nửa ${pack.container.toLowerCase()})` }
+      return { ok: false, reason: 'fraction', warning: `Cần xác nhận: ${requestedQuantity} ${requestedUnit} lẻ so với quy cách ${catalogUnit} (chỉ bán nguyên hoặc nửa ${pack.container.toLowerCase()})` }
     }
     return resolved(quantity, catalogUnit, catalogPrice, `${requestedQuantity} ${requestedUnit} = ${quantity} × ${catalogUnit}`)
   }
@@ -259,7 +296,7 @@ export function resolveOrderLine(input: ResolveOrderLineInput): ResolveOrderLine
     if (factor && factor.dimension === sized.dimension) {
       const quantity = toHalfStep((requestedQuantity * factor.toBase) / sized.measureBase)
       if (quantity === null) {
-        return { ok: false, warning: `Cần xác nhận: ${requestedQuantity}${requestedUnit} lẻ so với quy cách ${catalogUnit} (chỉ bán nguyên hoặc nửa ${sized.base.toLowerCase()})` }
+        return { ok: false, reason: 'fraction', warning: `Cần xác nhận: ${requestedQuantity}${requestedUnit} lẻ so với quy cách ${catalogUnit} (chỉ bán nguyên hoặc nửa ${sized.base.toLowerCase()})` }
       }
       return resolved(quantity, catalogUnit, catalogPrice, `${requestedQuantity}${requestedUnit} = ${quantity} × ${catalogUnit}`)
     }
@@ -271,12 +308,12 @@ export function resolveOrderLine(input: ResolveOrderLineInput): ResolveOrderLine
   if (catalogMeasure && requestedMeasure && catalogMeasure.dimension === requestedMeasure.dimension) {
     const quantity = toHalfStep((requestedQuantity * requestedMeasure.toBase) / catalogMeasure.toBase)
     if (quantity === null) {
-      return { ok: false, warning: `Cần xác nhận: ${requestedQuantity}${requestedUnit} lẻ so với đơn vị ${catalogUnit} (chỉ hỗ trợ bước 0.5 ${catalogUnit.toLowerCase()})` }
+      return { ok: false, reason: 'fraction', warning: `Cần xác nhận: ${requestedQuantity}${requestedUnit} lẻ so với đơn vị ${catalogUnit} (chỉ hỗ trợ bước 0.5 ${catalogUnit.toLowerCase()})` }
     }
     return resolved(quantity, catalogUnit, catalogPrice, `${requestedQuantity}${requestedUnit} = ${quantity} ${catalogUnit}`)
   }
 
-  return { ok: false, warning: `Cần xác nhận: đơn vị "${requestedUnit}" không khớp quy cách "${catalogUnit}"` }
+  return { ok: false, reason: 'unit_mismatch', warning: `Cần xác nhận: đơn vị "${requestedUnit}" không khớp quy cách "${catalogUnit}"` }
 }
 
 export interface OrderLineItem {
@@ -286,6 +323,12 @@ export interface OrderLineItem {
   orderedUnit?: string
   quantity: number
   unit: string
+  /**
+   * Staff confirmed that one orderedUnit is one catalog unit (e.g. 1 bì = 1 Gói).
+   * Set only by the resolver from a confirmationId it issued — without it, the
+   * conversion below would re-flag the line pending on every present_order call.
+   */
+  unitConfirmed?: boolean
   /** Known price retained when a line is pending only because of its unit. */
   catalogPrice?: number
   unitPrice: number | null
@@ -336,7 +379,10 @@ export function normalizeOrder(order: OrderDraft): OrderDraft {
     }
 
     let { quantity } = item
-    if (item.orderedQuantity !== undefined && item.orderedQuantity !== null && item.orderedUnit) {
+    if (item.unitConfirmed && item.orderedQuantity !== undefined && item.orderedQuantity !== null && item.orderedUnit) {
+      // Staff mapped the requested unit onto the catalog unit 1:1 — bill it as is.
+      quantity = item.orderedQuantity
+    } else if (item.orderedQuantity !== undefined && item.orderedQuantity !== null && item.orderedUnit) {
       const result = resolveOrderLine({
         productName: item.name,
         catalogUnit: item.unit,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { normalizeOrder, parsePackSpec, parseSizedUnit, resolveOrderLine, unitsEquivalent } from '../shared/utils/uom'
+import { normalizeOrder, parsePackSpec, parseSizedUnit, resolveOrderLine, unitFromProductName, unitsEquivalent } from '../shared/utils/uom'
 
 describe('parsePackSpec', () => {
   test('parses "Thùng/24 Hộp"', () => {
@@ -177,6 +177,33 @@ describe('parseSizedUnit', () => {
 
   test('plain unit has no measure', () => {
     expect(parseSizedUnit('Hộp')).toEqual({ base: 'Hộp', measureBase: null, dimension: null })
+  })
+})
+
+describe('unitFromProductName', () => {
+  // The bug: ĐVT column blank, packaging + size written into the product name.
+  test('pulls "Túi 1Kg" from "Mứt Chunky Vải, Hoa Hồng Túi 1Kg"', () => {
+    expect(unitFromProductName('Mứt Chunky Vải, Hoa Hồng Túi 1Kg')).toBe('Túi 1Kg')
+  })
+
+  test('preserves original casing and decimals', () => {
+    expect(unitFromProductName('BODUO Mứt Xoài Túi 1,3Kg')).toBe('Túi 1,3Kg')
+    expect(unitFromProductName('Sữa Đặc Chai 1.5L')).toBe('Chai 1.5L')
+    expect(unitFromProductName('Đào Ngâm Lon 820gr')).toBe('Lon 820gr')
+  })
+
+  test('takes the last packaging phrase when several appear', () => {
+    expect(unitFromProductName('Combo Túi 500g Gói 250g')).toBe('Gói 250g')
+  })
+
+  test('no container word before the size → null (avoids false positives)', () => {
+    expect(unitFromProductName('Lục Trà Lài Lộc Phát 1Kg')).toBeNull()
+    expect(unitFromProductName('Nước Cốt Dừa Wonderfarm 400ml')).toBeNull()
+  })
+
+  test('no size at all → null', () => {
+    expect(unitFromProductName('Cam Sấy Khô')).toBeNull()
+    expect(unitFromProductName('Đào Lon Thái To BODDOB')).toBeNull()
   })
 })
 
@@ -476,5 +503,72 @@ describe('normalizeOrder', () => {
     })
 
     expect(result.items[0]!.lineTotal).toBe(352_501)
+  })
+})
+
+describe('resolveOrderLine — mismatch reason', () => {
+  // The bug: a unit the catalog does not know ("bì" for a "Gói" product) was
+  // indistinguishable from a fractional-pack failure, so the caller could not
+  // offer staff a 1:1 mapping without also mis-billing pack fractions.
+  test('an unknown requested unit reports reason "unit_mismatch"', () => {
+    const result = resolveOrderLine({ catalogUnit: 'Gói', catalogPrice: 45_000, requestedQuantity: 1, requestedUnit: 'bì' })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe('unit_mismatch')
+  })
+
+  test('a fractional pack sub-unit reports reason "fraction"', () => {
+    const result = resolveOrderLine({ catalogUnit: 'Thùng/24 Hộp', catalogPrice: 705_000, requestedQuantity: 5, requestedUnit: 'Hộp' })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe('fraction')
+  })
+
+  test('an invalid quantity reports reason "invalid_input"', () => {
+    const result = resolveOrderLine({ catalogUnit: 'Gói', catalogPrice: 45_000, requestedQuantity: 0, requestedUnit: 'Gói' })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe('invalid_input')
+  })
+})
+
+describe('normalizeOrder — staff-confirmed unit mapping', () => {
+  // The bug: staff confirmed "1 bì = 1 Gói" but normalizeOrder re-ran the
+  // conversion on every present_order call and flipped the line back to pending.
+  test('bills a confirmed 1:1 mapping instead of re-flagging the line', () => {
+    const result = normalizeOrder({
+      customerName: '43 House CF',
+      items: [
+        {
+          name: 'Trân Châu 3Q Talinh Trắng',
+          orderedQuantity: 1,
+          orderedUnit: 'bì',
+          unitConfirmed: true,
+          quantity: 1,
+          unit: 'Gói',
+          unitPrice: 45_000,
+          lineTotal: 0,
+          note: '⚠️ Cần xác nhận: đơn vị "bì" không khớp quy cách "Gói"',
+        },
+      ],
+      totalQuantity: 1,
+      totalAmount: 0,
+      pendingCount: 1,
+    })
+
+    expect(result.items[0]).toMatchObject({ quantity: 1, unit: 'Gói', unitPrice: 45_000, lineTotal: 45_000 })
+    expect(result.items[0]!.note).toBeUndefined()
+    expect(result.pendingCount).toBe(0)
+    expect(result.totalAmount).toBe(45_000)
+  })
+
+  test('the confirmed mapping applies per requested unit (3 bì = 3 Gói)', () => {
+    const result = normalizeOrder({
+      customerName: '43 House CF',
+      items: [{ name: 'Trân Châu', orderedQuantity: 3, orderedUnit: 'bì', unitConfirmed: true, quantity: 0, unit: 'Gói', unitPrice: 45_000, lineTotal: null },],
+      totalQuantity: 0,
+      totalAmount: 0,
+      pendingCount: 1,
+    })
+
+    expect(result.items[0]).toMatchObject({ quantity: 3, lineTotal: 135_000 })
+    expect(result.pendingCount).toBe(0)
   })
 })

@@ -1,4 +1,4 @@
-import { parsePackSpec, parseSizedUnit, resolveOrderLine } from '../../../shared/utils/uom'
+import { parsePackSpec, parseSizedUnit, resolveOrderLine, unitFromProductName } from '../../../shared/utils/uom'
 
 export const BILL_STATIC_DATE = '31/12/2026'
 
@@ -68,12 +68,12 @@ export interface ResolvedBillLine {
   evidence: {
     selectionSource?: 'positive_history' | 'static_price' | 'staff_confirmation'
     priceSource?: 'latest_positive_history' | 'static_price'
-    unitSource?: 'history' | 'static_price' | 'business_override' | 'staff_confirmation'
+    unitSource?: 'history' | 'static_price' | 'business_override' | 'product_name' | 'staff_confirmation'
     rowDates: string[]
   }
   candidates: Array<{ candidateId: string, sku: string, productName: string, reason: string }>
   confirmations: Array<{ confirmationId: string, kind: 'unit' | 'price', label: string, reason: string }>
-  resolved?: { quantity: number, unit: string, catalogPrice: number, unitPrice: number, lineTotal: number }
+  resolved?: { quantity: number, unit: string, catalogPrice: number, unitPrice: number, lineTotal: number, unitConfirmed?: boolean }
   warning?: string
 }
 
@@ -87,6 +87,7 @@ export interface ResolvedOrderDraft {
     orderedUnit: string
     quantity: number
     unit: string
+    unitConfirmed?: boolean
     unitPrice: number | null
     lineTotal: number | null
     note?: string
@@ -415,14 +416,23 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     .find(row => isValidCatalogUnit(row['ĐVT']))
   const staticUnitRow = productStatic.find(row => isValidCatalogUnit(row['ĐVT']))
   const overrideUnit = businessUnitOverride(selectedProduct)
+  // ĐVT column blank but the packaging + size sits in the product name ("... Túi 1Kg").
+  const nameUnit = unitFromProductName(selectedProduct)
   const unitConfirmationId = `unit:${encodeURIComponent(item.lineId)}:requested-1to1`
   const confirmedUnit = confirmedIds.has(unitConfirmationId) ? item.requestedUnit : null
-  const unit = historyUnitRow?.['ĐVT'] ?? staticUnitRow?.['ĐVT'] ?? overrideUnit ?? confirmedUnit
-  const unitSource = historyUnitRow
-    ? 'history' as const
-    : staticUnitRow ? 'static_price' as const
-    : overrideUnit ? 'business_override' as const
-    : confirmedUnit ? 'staff_confirmation' as const : undefined
+  // The catalog has a ĐVT but the customer ordered in another unit ("1 bì" of a
+  // "Gói" product). Staff can map it 1:1; until they do, the line stays pending.
+  const mappingConfirmationId = `unit:${encodeURIComponent(item.lineId)}:requested-equals-catalog`
+  const unitMappedByStaff = confirmedIds.has(mappingConfirmationId)
+  const unit = historyUnitRow?.['ĐVT'] ?? staticUnitRow?.['ĐVT'] ?? overrideUnit ?? nameUnit ?? confirmedUnit
+  const unitSource = unitMappedByStaff
+    ? 'staff_confirmation' as const
+    : historyUnitRow
+      ? 'history' as const
+      : staticUnitRow ? 'static_price' as const
+      : overrideUnit ? 'business_override' as const
+      : nameUnit ? 'product_name' as const
+      : confirmedUnit ? 'staff_confirmation' as const : undefined
 
   const confirmations: ResolvedBillLine['confirmations'] = []
   if (!unit) {
@@ -469,10 +479,28 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     catalogUnit: unit,
     catalogPrice: price,
     requestedQuantity: item.requestedQuantity,
-    requestedUnit: item.requestedUnit,
+    // Staff confirmed 1 requested unit = 1 catalog unit → bill in the catalog unit.
+    requestedUnit: unitMappedByStaff ? undefined : item.requestedUnit,
   })
   if (!calculated.ok) {
-    return { ...base, status: 'needs_unit_confirmation', warning: calculated.warning }
+    // A fractional pack ("5 Hộp" of "Thùng/24 Hộp") must never be offered as a
+    // 1:1 mapping — that would bill 5 thùng. Only an unknown unit is mappable.
+    const mappable = calculated.reason === 'unit_mismatch'
+    return {
+      ...base,
+      status: 'needs_unit_confirmation',
+      confirmations: mappable
+        ? [
+          ...base.confirmations, {
+            confirmationId: mappingConfirmationId,
+            kind: 'unit' as const,
+            label: `Xác nhận 1 ${item.requestedUnit} = 1 ${unit} cho ${selectedProduct}`,
+            reason: `Bảng giá ghi ĐVT "${unit}", khách đặt theo "${item.requestedUnit}"`,
+          }
+        ]
+        : base.confirmations,
+      warning: calculated.warning,
+    }
   }
 
   const resolved = {
@@ -481,6 +509,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     catalogPrice: price,
     unitPrice: calculated.unitPrice,
     lineTotal: calculated.lineTotal,
+    ...(unitMappedByStaff ? { unitConfirmed: true } : {}),
   }
 
   if (/cập\s*nhật\s*-?\s*báo\s*khách/i.test(flags)) {
@@ -560,6 +589,7 @@ export function resolveBillOrder(index: BillIndex, request: ResolveBillOrderRequ
       orderedUnit: line.request.requestedUnit,
       quantity: resolved?.quantity ?? 0,
       unit: resolved?.unit ?? '',
+      ...(resolved?.unitConfirmed ? { unitConfirmed: true } : {}),
       unitPrice: resolved?.unitPrice ?? null,
       lineTotal: resolved?.lineTotal ?? null,
       ...(line.warning ? { note: line.warning } : {}),
