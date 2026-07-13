@@ -61,6 +61,9 @@ function onChangeRequested() {
           <span v-if="invocation.output.customerCode" class="text-muted font-normal">({{ invocation.output.customerCode }})</span>
         </h3>
       </div>
+      <p v-if="invocation.output.customerNote" class="mt-1 text-xs text-muted">
+        {{ invocation.output.customerNote }}
+      </p>
     </div>
 
     <div class="overflow-x-auto">

@@ -60,6 +60,29 @@ Do not call `bash`, `bash_batch`, `web_search`, or one calculator tool per item
 for an order workflow. Parsing, matching, precedence, unit conversion, and
 arithmetic belong inside `resolve_bill_order`.
 
+## Chat-scoped confirmation memory (ADR 0001)
+
+Staff confirmations from earlier drafts in the same chat are reused by later
+drafts of that chat — never across chats. The memory lives server-side
+(`order:chatmem:${chatId}`), is applied inside the resolver, and is invisible
+to the model: it is not part of the tool input schema and cannot be injected.
+
+- **Branch selections** (`Doris Coffee & Tea House` → KH004610) auto-apply to
+  later orders in the chat when the same query is ambiguous again; the draft
+  carries a visible `customerNote` provenance line so staff can override.
+- **Product aliases** ("rich lùn" → `Kem Béo Thực Vật Richs (454G)`) are keyed
+  per customer code and never shared between customers. They are recorded when
+  staff pick a candidate or rename a line until it resolves.
+- **Unit mappings** are keyed per product. `requested-1to1` fills a missing
+  catalog ĐVT; `requested-equals-catalog` maps a foreign requested unit and is
+  valid only while the catalog unit it was confirmed against is unchanged.
+- **Price approvals** are keyed to the exact approved value: a different
+  computed price invalidates the memory and re-asks.
+- **BILL.md evidence always beats memory.** Memory sits last in every
+  precedence chain and only fills gaps the data leaves open. Every line or
+  customer resolved from memory carries visible provenance
+  (`✔️ Dùng xác nhận trước đó trong chat`, `evidence.*Source = 'chat_memory'`).
+
 On every resolver execution, load and parse `files/bill/BILL.md` directly from
 the current sandbox. Do not cache its contents across calls. When source sync
 selects a new snapshot, invalidate sessions created from the previous snapshot.

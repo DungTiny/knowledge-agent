@@ -1,8 +1,8 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import { kv } from '@nuxthub/kv'
-import { parseBillMarkdown, resolveBillOrder } from './bill-resolver'
-import type { BillIndex, BillOrderConfirmation, BillOrderSelection, RequestedOrderItem, ResolvedOrderDraft } from './bill-resolver'
+import { collectChatMemory, emptyChatOrderMemory, parseBillMarkdown, resolveBillOrder } from './bill-resolver'
+import type { BillIndex, BillOrderConfirmation, BillOrderSelection, ChatOrderMemory, RequestedOrderItem, ResolvedOrderDraft } from './bill-resolver'
 import type { SandboxBillSource } from './bill-source'
 
 const requestedItemSchema = z.object({
@@ -46,6 +46,12 @@ interface StoredBillDraft {
 
 function draftKey(chatId: string, draftId: string): string {
   return `order:draft:${chatId}:${draftId}`
+}
+
+// Chat-scoped confirmation memory (ADR 0001): lives exactly as long as the
+// chat, never shared across chats.
+function chatMemoryKey(chatId: string): string {
+  return `order:chatmem:${chatId}`
 }
 
 /** The resolver draft stored for a draftId, for present_order; null when unknown. */
@@ -95,11 +101,20 @@ export function createResolveBillOrderTool(
       // on every tool execution instead of caching build-time or warm-instance data.
       const billSource = await loadBillSource()
       const billIndex: BillIndex = parseBillMarkdown(billSource.content)
+      const chatMemory = await kv.get<ChatOrderMemory>(chatMemoryKey(chatId)) ?? emptyChatOrderMemory()
       const output = resolveBillOrder(billIndex, {
         draftId,
         ...state,
+        chatMemory,
       })
       await kv.set(key, { ...state, orderDraft: output.orderDraft })
+      await kv.set(chatMemoryKey(chatId), collectChatMemory({
+        memory: chatMemory,
+        previousQuery: stored?.customerQuery,
+        previousItems: stored?.items,
+        request: state,
+        output,
+      }))
 
       const summary = output.customer.status !== 'resolved'
         ? `Customer ${output.customer.status}; ${output.customer.candidates.length} candidate(s)`

@@ -78,3 +78,19 @@ describe('present_order trust boundary', () => {
     expect(result.totalAmount).toBe(150_000)
   })
 })
+
+describe('chat-memory provenance on the rendered card', () => {
+  // ADR 0001: a branch resolved from chat memory carries a visible note; the
+  // stored-draft render path must not drop it.
+  test('customerNote on the stored draft survives rendering', async () => {
+    const noted: OrderDraft = {
+      ...storedDraft,
+      customerNote: 'Dùng chi nhánh FB_8074 đã chọn trước đó trong chat',
+    }
+    const presentOrder = createPresentOrderTool(() => Promise.resolve(noted))
+
+    const result = await presentOrder.execute!(tamperedInput, toolOptions as never)
+
+    expect(result.customerNote).toContain('trong chat')
+  })
+})

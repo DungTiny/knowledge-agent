@@ -339,6 +339,8 @@ export interface OrderLineItem {
 export interface OrderDraft {
   customerName: string
   customerCode?: string
+  /** Provenance note, e.g. the branch was reused from chat memory (ADR 0001). */
+  customerNote?: string
   items: OrderLineItem[]
   totalQuantity: number
   totalAmount: number

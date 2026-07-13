@@ -45,12 +45,42 @@ export interface BillOrderConfirmation {
   confirmationId: string
 }
 
+/**
+ * Chat-scoped confirmation memory (ADR 0001): staff confirmations from earlier
+ * drafts in the same chat, reusable by later drafts of that chat only. BILL.md
+ * evidence always beats this memory — it only fills gaps the data leaves open.
+ */
+export interface ChatOrderMemory {
+  /** canonical customer query → branch the staff picked. */
+  customerSelections: Array<{ queryKey: string, customerCode: string }>
+  /** Staff shorthand → product, valid for one customer only. */
+  productAliases: Array<{ customerCode: string, aliasKey: string, productKey: string }>
+  /**
+   * `requested-1to1`: catalog had no ĐVT, staff's requested unit is the unit.
+   * `requested-equals-catalog`: 1 requested unit = 1 catalog unit, valid only
+   * while the catalog unit still equals `catalogUnitKey`.
+   */
+  unitMappings: Array<{
+    productKey: string
+    requestedUnitKey: string
+    kind: 'requested-1to1' | 'requested-equals-catalog'
+    catalogUnitKey?: string
+  }>
+  /** Approved price values; a different computed price invalidates the entry. */
+  priceConfirmations: Array<{ customerCode: string, productKey: string, price: number }>
+}
+
+export function emptyChatOrderMemory(): ChatOrderMemory {
+  return { customerSelections: [], productAliases: [], unitMappings: [], priceConfirmations: [] }
+}
+
 export interface ResolveBillOrderRequest {
   draftId: string
   customerQuery: string
   items: RequestedOrderItem[]
   selections?: BillOrderSelection[]
   confirmations?: BillOrderConfirmation[]
+  chatMemory?: ChatOrderMemory
 }
 
 export type BillLineStatus =
@@ -66,9 +96,9 @@ export interface ResolvedBillLine {
   request: RequestedOrderItem
   matched?: { sku: string, canonicalSku: string, productName: string }
   evidence: {
-    selectionSource?: 'positive_history' | 'static_price' | 'staff_confirmation'
+    selectionSource?: 'positive_history' | 'static_price' | 'staff_confirmation' | 'chat_memory'
     priceSource?: 'latest_positive_history' | 'static_price'
-    unitSource?: 'history' | 'static_price' | 'business_override' | 'product_name' | 'staff_confirmation'
+    unitSource?: 'history' | 'static_price' | 'business_override' | 'product_name' | 'staff_confirmation' | 'chat_memory'
     rowDates: string[]
   }
   candidates: Array<{ candidateId: string, sku: string, productName: string, reason: string }>
@@ -80,6 +110,8 @@ export interface ResolvedBillLine {
 export interface ResolvedOrderDraft {
   customerName: string
   customerCode?: string
+  /** Provenance shown to staff when the branch came from chat memory. */
+  customerNote?: string
   items: Array<{
     name: string
     sku?: string
@@ -242,7 +274,12 @@ function canonicalCustomerText(value: string): string {
   return tokens(value).map(token => CUSTOMER_TOKEN_SYNONYMS[token] ?? token).join(' ')
 }
 
-function resolveCustomer(index: BillIndex, query: string, selections: Map<string, string>) {
+/** Stable key for chat-memory customer selections. */
+export function customerQueryKey(query: string): string {
+  return canonicalCustomerText(query)
+}
+
+function resolveCustomer(index: BillIndex, query: string, selections: Map<string, string>, memory?: ChatOrderMemory) {
   const selected = selections.get('$customer')
   if (selected) {
     const match = index.customers.find(customer => customerCandidateId(customer.code) === selected)
@@ -266,6 +303,15 @@ function resolveCustomer(index: BillIndex, query: string, selections: Map<string
   })
 
   if (matches.length === 1) return { status: 'resolved' as const, customer: matches[0]!, candidates: [] }
+
+  // Chat memory fills the gap only when BILL.md itself is ambiguous, and only
+  // if the remembered branch is still one of the current candidates.
+  if (matches.length > 1 && memory) {
+    const remembered = memory.customerSelections.find(entry => entry.queryKey === canonicalQuery)
+    const match = remembered && matches.find(customer => customer.code === remembered.customerCode)
+    if (match) return { status: 'resolved' as const, customer: match, candidates: [], fromMemory: true }
+  }
+
   return {
     status: matches.length > 1 ? 'ambiguous' as const : 'not_found' as const,
     customer: undefined,
@@ -370,16 +416,41 @@ function warningText(rows: BillRow[]): string {
   return rows.map(row => `${row['Số lượng']} ${row['Giảm giá']} ${row['Ghi chú hàng hóa']}`).join(' ')
 }
 
+const CHAT_MEMORY_NOTE = '✔️ Dùng xác nhận trước đó trong chat'
+
 function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   customerCode: string
   selectedCandidateId?: string
   confirmedIds: Set<string>
+  memory?: ChatOrderMemory
 }): ResolvedBillLine {
-  const { customerCode, selectedCandidateId, confirmedIds } = options
+  const { customerCode, selectedCandidateId, confirmedIds, memory } = options
+  // Marks the line's visible provenance whenever chat memory decided anything.
+  let usedChatMemory = false
+  const finalize = (line: ResolvedBillLine): ResolvedBillLine => usedChatMemory
+    ? { ...line, warning: line.warning ? `${line.warning} — ${CHAT_MEMORY_NOTE}` : CHAT_MEMORY_NOTE }
+    : line
+
   const historyScope = dedupeRows(index.rows.filter(row => row['Mã khách hàng'] === customerCode && isPositiveHistory(row)))
   const staticScope = dedupeRows(staticRowsForCustomer(index, customerCode))
-  const historyMatches = historyScope.filter(row => productMatches(row, item.rawName))
-  const staticMatches = staticScope.filter(row => productMatches(row, item.rawName))
+  let historyMatches = historyScope.filter(row => productMatches(row, item.rawName))
+  let staticMatches = staticScope.filter(row => productMatches(row, item.rawName))
+
+  // A confirmed per-customer alias narrows/overrides token matching — but only
+  // when the aliased product still exists in this customer's history/price list.
+  let aliasApplied = false
+  const alias = memory?.productAliases.find(entry =>
+    entry.customerCode === customerCode && entry.aliasKey === normalizeBillText(item.rawName))
+  if (alias) {
+    const aliasHistory = historyScope.filter(row => normalizeBillText(row['Tên hàng']) === alias.productKey)
+    const aliasStatic = staticScope.filter(row => normalizeBillText(row['Tên hàng']) === alias.productKey)
+    if (aliasHistory.length > 0 || aliasStatic.length > 0) {
+      historyMatches = aliasHistory
+      staticMatches = aliasStatic
+      aliasApplied = true
+    }
+  }
+
   const candidateRows = historyMatches.length > 0 ? historyMatches : staticMatches
   const candidateGroups = new Map<string, BillRow[]>()
   for (const row of candidateRows) {
@@ -410,7 +481,10 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   }
   if (!selectedProduct && candidateGroups.size === 1) {
     selectedProduct = candidates[0]!.productName
-    selectionSource = historyMatches.length > 0 ? 'positive_history' : 'static_price'
+    selectionSource = aliasApplied
+      ? 'chat_memory'
+      : historyMatches.length > 0 ? 'positive_history' : 'static_price'
+    if (aliasApplied) usedChatMemory = true
   }
   if (!selectedProduct) {
     const exact = candidates.filter(candidate => normalizeBillText(candidate.productName) === normalizeBillText(item.rawName))
@@ -440,7 +514,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     const warning = candidates.length > 0
       ? `Cần xác nhận sản phẩm cho "${item.rawName}"`
       : `Không tìm thấy sản phẩm "${item.rawName}" trong lịch sử/bảng giá của khách hàng`
-    return {
+    return finalize({
       lineId: item.lineId,
       status: candidates.length > 0 ? 'needs_product_confirmation' : 'not_found',
       request: item,
@@ -448,7 +522,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       candidates,
       confirmations: [],
       warning,
-    }
+    })
   }
 
   const productKey = normalizeBillText(selectedProduct)
@@ -476,8 +550,15 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
 
   const priceConfirmationId = `price:${encodeURIComponent(item.lineId)}:use-current`
   const flags = warningText(productStatic)
-  const priceNeedsConfirmation = /hỏi\s*lại\s*giá|báo\s*tăng/i.test(flags)
+  // Price memory is keyed to the approved value: any other computed price
+  // invalidates the remembered approval (ADR 0001).
+  const memoryPriceApproved = price !== null && (memory?.priceConfirmations.some(entry =>
+    entry.customerCode === customerCode && entry.productKey === productKey && entry.price === price) ?? false)
+  const priceFlagged = /hỏi\s*lại\s*giá|báo\s*tăng/i.test(flags)
+  if (priceFlagged && !confirmedIds.has(priceConfirmationId) && memoryPriceApproved) usedChatMemory = true
+  const priceNeedsConfirmation = priceFlagged
     && !confirmedIds.has(priceConfirmationId)
+    && !memoryPriceApproved
 
   const historyUnitRow = [...productHistory]
     .sort((a, b) => parseDate(b['Thời gian']) - parseDate(a['Thời gian']))
@@ -486,21 +567,42 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   const overrideUnit = businessUnitOverride(selectedProduct)
   // ĐVT column blank but the packaging + size sits in the product name ("... Túi 1Kg").
   const nameUnit = unitFromProductName(selectedProduct)
+  const requestedUnitKey = normalizeBillText(item.requestedUnit)
   const unitConfirmationId = `unit:${encodeURIComponent(item.lineId)}:requested-1to1`
-  const confirmedUnit = confirmedIds.has(unitConfirmationId) ? item.requestedUnit : null
+  const draftConfirmedUnit = confirmedIds.has(unitConfirmationId) ? item.requestedUnit : null
+  // A remembered 1:1 unit sits last in precedence, exactly like a fresh staff
+  // confirmation: it can only ever fill a catalog gap, never override one.
+  const memoryUnit = !draftConfirmedUnit && memory?.unitMappings.some(entry =>
+    entry.kind === 'requested-1to1' && entry.productKey === productKey && entry.requestedUnitKey === requestedUnitKey)
+    ? item.requestedUnit
+    : null
+  const confirmedUnit = draftConfirmedUnit ?? memoryUnit
+  const unit = historyUnitRow?.['ĐVT'] ?? staticUnitRow?.['ĐVT'] ?? overrideUnit ?? nameUnit ?? confirmedUnit
   // The catalog has a ĐVT but the customer ordered in another unit ("1 bì" of a
   // "Gói" product). Staff can map it 1:1; until they do, the line stays pending.
   const mappingConfirmationId = `unit:${encodeURIComponent(item.lineId)}:requested-equals-catalog`
-  const unitMappedByStaff = confirmedIds.has(mappingConfirmationId)
-  const unit = historyUnitRow?.['ĐVT'] ?? staticUnitRow?.['ĐVT'] ?? overrideUnit ?? nameUnit ?? confirmedUnit
-  const unitSource = unitMappedByStaff
+  const draftMapped = confirmedIds.has(mappingConfirmationId)
+  // A remembered mapping is valid only while the catalog unit it was confirmed
+  // against is unchanged; a new catalog ĐVT invalidates it (ADR 0001).
+  const memoryMapped = !draftMapped && unit !== null && (memory?.unitMappings.some(entry =>
+    entry.kind === 'requested-equals-catalog'
+    && entry.productKey === productKey
+    && entry.requestedUnitKey === requestedUnitKey
+    && entry.catalogUnitKey === normalizeBillText(unit)) ?? false)
+  const unitMappedByStaff = draftMapped || memoryMapped
+  if (memoryMapped) usedChatMemory = true
+  const unitSource = draftMapped
     ? 'staff_confirmation' as const
-    : historyUnitRow
-      ? 'history' as const
-      : staticUnitRow ? 'static_price' as const
-      : overrideUnit ? 'business_override' as const
-      : nameUnit ? 'product_name' as const
-      : confirmedUnit ? 'staff_confirmation' as const : undefined
+    : memoryMapped
+      ? 'chat_memory' as const
+      : historyUnitRow
+        ? 'history' as const
+        : staticUnitRow ? 'static_price' as const
+        : overrideUnit ? 'business_override' as const
+        : nameUnit ? 'product_name' as const
+        : draftConfirmedUnit ? 'staff_confirmation' as const
+        : memoryUnit ? 'chat_memory' as const : undefined
+  if (unitSource === 'chat_memory' && memoryUnit) usedChatMemory = true
 
   const confirmations: ResolvedBillLine['confirmations'] = []
   if (!unit) {
@@ -536,10 +638,10 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
 
   if (price === null || priceNeedsConfirmation) {
     const warning = price === null ? 'Cần xác nhận giá bán' : 'Cần xác nhận giá theo ghi chú bảng giá'
-    return { ...base, status: 'needs_price_confirmation', warning }
+    return finalize({ ...base, status: 'needs_price_confirmation', warning })
   }
   if (!unit) {
-    return { ...base, status: 'needs_unit_confirmation', warning: `Cần xác nhận ĐVT cho ${selectedProduct}` }
+    return finalize({ ...base, status: 'needs_unit_confirmation', warning: `Cần xác nhận ĐVT cho ${selectedProduct}` })
   }
 
   const calculated = resolveOrderLine({
@@ -554,7 +656,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     // A fractional pack ("5 Hộp" of "Thùng/24 Hộp") must never be offered as a
     // 1:1 mapping — that would bill 5 thùng. Only an unknown unit is mappable.
     const mappable = calculated.reason === 'unit_mismatch'
-    return {
+    return finalize({
       ...base,
       status: 'needs_unit_confirmation',
       confirmations: mappable
@@ -568,7 +670,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
         ]
         : base.confirmations,
       warning: calculated.warning,
-    }
+    })
   }
 
   const resolved = {
@@ -584,7 +686,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     const notified = flags.match(/(\d{1,2})[./](\d{1,2})[./](\d{2,4})/)
     if (!notified) {
       // Note flags an update but records no notified date → keep the generic notice.
-      return { ...base, status: 'resolved', resolved, warning: '⚠️ Bảng giá ghi CẬP NHẬT - BÁO KHÁCH' }
+      return finalize({ ...base, status: 'resolved', resolved, warning: '⚠️ Bảng giá ghi CẬP NHẬT - BÁO KHÁCH' })
     }
     const [notifiedLabel] = notified
     const year = Number(notified[3]!) < 100 ? Number(notified[3]!) + 2000 : Number(notified[3]!)
@@ -592,13 +694,17 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     const repurchased = productHistory.some(row =>
       parseDate(row['Thời gian']) >= notifiedDate && parseNumber(row['Giá bán']) === price)
     if (repurchased) {
-      return { ...base, status: 'resolved', resolved, warning: `✅ Đã báo khách ${notifiedLabel}, khách đã mua lại — dùng giá hiện tại` }
+      return finalize({ ...base, status: 'resolved', resolved, warning: `✅ Đã báo khách ${notifiedLabel}, khách đã mua lại — dùng giá hiện tại` })
     }
     const notifiedConfirmationId = `notified:${encodeURIComponent(item.lineId)}:confirmed`
     if (confirmedIds.has(notifiedConfirmationId)) {
-      return { ...base, status: 'resolved', resolved, warning: `✅ Đã xác nhận báo khách ${notifiedLabel}, dùng giá hiện tại` }
+      return finalize({ ...base, status: 'resolved', resolved, warning: `✅ Đã xác nhận báo khách ${notifiedLabel}, dùng giá hiện tại` })
     }
-    return {
+    if (memoryPriceApproved) {
+      usedChatMemory = true
+      return finalize({ ...base, status: 'resolved', resolved, warning: `✅ Đã xác nhận báo khách ${notifiedLabel}, dùng giá hiện tại` })
+    }
+    return finalize({
       ...base,
       status: 'needs_price_confirmation',
       confirmations: [
@@ -611,10 +717,138 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
         },
       ],
       warning: `⚠️ CẬP NHẬT - đã báo khách ${notifiedLabel} nhưng chưa mua lại, cần báo lại giá`,
+    })
+  }
+
+  return finalize({ ...base, status: 'resolved', resolved })
+}
+
+function upsert<T>(entries: T[], entry: T, key: (value: T) => string): T[] {
+  const entryKey = key(entry)
+  return [...entries.filter(existing => key(existing) !== entryKey), entry]
+}
+
+/**
+ * Fold one resolution into the chat's confirmation memory (ADR 0001). Only
+ * staff-driven facts are recorded: branch selections, shorthand renames or
+ * candidate picks, and unit/price confirmation IDs the resolver issued.
+ * Auto-resolved lines need no memory — they resolve again by themselves.
+ */
+export function collectChatMemory(options: {
+  memory: ChatOrderMemory
+  previousQuery?: string
+  previousItems?: RequestedOrderItem[]
+  request: {
+    customerQuery: string
+    items: RequestedOrderItem[]
+    selections: BillOrderSelection[]
+    confirmations: BillOrderConfirmation[]
+  }
+  output: ResolveBillOrderOutput
+}): ChatOrderMemory {
+  const { previousQuery, previousItems, request, output } = options
+  let { memory } = options
+  if (output.customer.status !== 'resolved' || !output.customer.code) return memory
+
+  const customerCode = output.customer.code
+  const customerKey = (entry: { queryKey: string }) => entry.queryKey
+
+  const staffPickedBranch = request.selections.some(selection => selection.lineId === '$customer')
+  if (staffPickedBranch) {
+    memory = {
+      ...memory,
+      customerSelections: upsert(memory.customerSelections, {
+        queryKey: customerQueryKey(request.customerQuery),
+        customerCode,
+      }, customerKey),
+    }
+  }
+  // Staff answered an ambiguous branch question by retyping the query (often
+  // the raw code): remember the resolution under the original query.
+  if (previousQuery && customerQueryKey(previousQuery) !== customerQueryKey(request.customerQuery)) {
+    memory = {
+      ...memory,
+      customerSelections: upsert(memory.customerSelections, {
+        queryKey: customerQueryKey(previousQuery),
+        customerCode,
+      }, customerKey),
     }
   }
 
-  return { ...base, status: 'resolved', resolved }
+  const previousByLine = new Map((previousItems ?? []).map(item => [item.lineId, item]))
+  const selectionByLine = new Map(request.selections.map(selection => [selection.lineId, selection.candidateId]))
+  const confirmationsByLine = new Map<string, string[]>()
+  for (const confirmation of request.confirmations) {
+    confirmationsByLine.set(confirmation.lineId, [
+      ...(confirmationsByLine.get(confirmation.lineId) ?? []),
+      confirmation.confirmationId,
+    ])
+  }
+
+  const aliasEntryKey = (entry: { customerCode: string, aliasKey: string }) => `${entry.customerCode}${entry.aliasKey}`
+  const unitEntryKey = (entry: { productKey: string, requestedUnitKey: string, kind: string }) => `${entry.productKey}${entry.requestedUnitKey}${entry.kind}`
+  const priceEntryKey = (entry: { customerCode: string, productKey: string }) => `${entry.customerCode}${entry.productKey}`
+
+  for (const line of output.lines) {
+    if (!line.matched) continue
+    const productKey = normalizeBillText(line.matched.productName)
+
+    // Alias: staff picked a candidate for this shorthand …
+    const aliasSourceNames: string[] = []
+    if (selectionByLine.has(line.lineId)) aliasSourceNames.push(line.request.rawName)
+    // … or renamed the line until it resolved; the original shorthand is the alias.
+    const previous = previousByLine.get(line.lineId)
+    if (previous && normalizeBillText(previous.rawName) !== normalizeBillText(line.request.rawName)) {
+      aliasSourceNames.push(previous.rawName)
+    }
+    for (const sourceName of aliasSourceNames) {
+      const aliasKey = normalizeBillText(sourceName)
+      if (aliasKey === productKey) continue
+      memory = {
+        ...memory,
+        productAliases: upsert(memory.productAliases, { customerCode, aliasKey, productKey }, aliasEntryKey),
+      }
+    }
+
+    const confirmedIds = confirmationsByLine.get(line.lineId) ?? []
+    const requestedUnitKey = normalizeBillText(line.request.requestedUnit)
+    if (line.evidence.unitSource === 'staff_confirmation') {
+      if (line.resolved?.unitConfirmed && confirmedIds.some(id => id.endsWith(':requested-equals-catalog'))) {
+        memory = {
+          ...memory,
+          unitMappings: upsert(memory.unitMappings, {
+            productKey,
+            requestedUnitKey,
+            kind: 'requested-equals-catalog' as const,
+            catalogUnitKey: normalizeBillText(line.resolved.unit),
+          }, unitEntryKey),
+        }
+      } else if (confirmedIds.some(id => id.endsWith(':requested-1to1'))) {
+        memory = {
+          ...memory,
+          unitMappings: upsert(memory.unitMappings, {
+            productKey,
+            requestedUnitKey,
+            kind: 'requested-1to1' as const,
+          }, unitEntryKey),
+        }
+      }
+    }
+
+    const priceConfirmed = confirmedIds.some(id => id.startsWith('price:') || id.startsWith('notified:'))
+    if (priceConfirmed && line.status === 'resolved' && line.resolved) {
+      memory = {
+        ...memory,
+        priceConfirmations: upsert(memory.priceConfirmations, {
+          customerCode,
+          productKey,
+          price: line.resolved.catalogPrice,
+        }, priceEntryKey),
+      }
+    }
+  }
+
+  return memory
 }
 
 export function resolveBillOrder(index: BillIndex, request: ResolveBillOrderRequest): ResolveBillOrderOutput {
@@ -626,7 +860,7 @@ export function resolveBillOrder(index: BillIndex, request: ResolveBillOrderRequ
     confirmationsByLine.set(confirmation.lineId, set)
   }
 
-  const customerResolution = resolveCustomer(index, request.customerQuery, selections)
+  const customerResolution = resolveCustomer(index, request.customerQuery, selections, request.chatMemory)
   if (!customerResolution.customer) {
     return {
       resolutionStatus: 'needs_confirmation',
@@ -642,10 +876,12 @@ export function resolveBillOrder(index: BillIndex, request: ResolveBillOrderRequ
   }
 
   const { customer } = customerResolution
+  const customerFromMemory = 'fromMemory' in customerResolution && customerResolution.fromMemory === true
   const lines = request.items.map(item => resolveLine(index, item, {
     customerCode: customer.code,
     selectedCandidateId: selections.get(item.lineId),
     confirmedIds: confirmationsByLine.get(item.lineId) ?? new Set(),
+    memory: request.chatMemory,
   }))
 
   const draftItems = lines.map((line) => {
@@ -666,6 +902,9 @@ export function resolveBillOrder(index: BillIndex, request: ResolveBillOrderRequ
   const orderDraft: ResolvedOrderDraft = {
     customerName: customer.name,
     customerCode: customer.code,
+    ...(customerFromMemory
+      ? { customerNote: `Dùng chi nhánh ${customer.code} đã chọn trước đó trong chat` }
+      : {}),
     items: draftItems,
     totalQuantity: Math.round(draftItems.reduce((sum, item) => sum + item.quantity, 0) * 1000) / 1000,
     totalAmount: draftItems.reduce((sum, item) => sum + (item.lineTotal ?? 0), 0),

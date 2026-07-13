@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { parseBillMarkdown, resolveBillOrder } from '../server/utils/chat/bill-resolver'
-import type { RequestedOrderItem } from '../server/utils/chat/bill-resolver'
+import { collectChatMemory, customerQueryKey, emptyChatOrderMemory, normalizeBillText, parseBillMarkdown, resolveBillOrder } from '../server/utils/chat/bill-resolver'
+import type { ChatOrderMemory, RequestedOrderItem } from '../server/utils/chat/bill-resolver'
 
 const headers = [
   'Mã khách hàng',
@@ -445,5 +445,433 @@ describe('full purchase history instead of the single newest purchase date', () 
       evidence: { priceSource: 'latest_positive_history' },
       resolved: { quantity: 1, unitPrice: 130_000, lineTotal: 130_000 },
     })
+  })
+})
+
+// ADR 0001: chat-scoped confirmation memory. Confirmations from earlier drafts
+// in the same chat are reused; BILL.md evidence always beats the memory.
+const chatMemory = (partial: Partial<ChatOrderMemory>): ChatOrderMemory => ({
+  customerSelections: [],
+  productAliases: [],
+  unitMappings: [],
+  priceConfirmations: [],
+  ...partial,
+})
+
+const memCustomer = ['MEM01', 'Trà Sữa Mộng Mơ', 'BG12']
+const memRows = [
+  // Two white-pearl brands where recency (Talinh) and frequency (Zion) disagree
+  // → a generic "trân châu trắng" request is ambiguous without memory.
+  [...memCustomer, 'tc-zion', 'Trân Châu 3Q Zion Trắng', 'Thùng/6 Gói', '01/07/2026', '1', '290000', '', '290000', ''],
+  [...memCustomer, 'tc-zion', 'Trân Châu 3Q Zion Trắng', 'Thùng/6 Gói', '02/07/2026', '1', '290000', '', '290000', ''],
+  [...memCustomer, 'tc-talinh', 'Trân Châu Talinh Trắng', 'Thùng/6 Gói', '05/07/2026', '2', '280000', '', '280000', ''],
+  // Staff shorthand "rich lùn" shares no full token with this name → not_found without an alias.
+  [...memCustomer, 'richs-lun', 'Kem Béo Thực Vật Richs (454G) - Hàng Lạnh', 'Thùng/24 Hộp', '03/07/2026', '1', '705000', '', '705000', ''],
+  // No catalog ĐVT anywhere and no unit in the name → unit must come from staff.
+  [...memCustomer, 'sinh-to-vai', 'Sinh Tố Bốn Mùa Osterberg Vải', '', '02/07/2026', '1', '135000', '', '135000', ''],
+  // Static price note flags a price confirmation on every order.
+  [...memCustomer, 'bot-x', 'Bột Sương Sáo X', 'Gói', '01/07/2026', '1', '40000', '', '40000', ''],
+  [...memCustomer, 'bot-x', 'Bột Sương Sáo X', 'Gói', '31/12/2026', '', '40000', '', '40000', 'Hỏi lại giá'],
+  // Valid catalog ĐVT exists → memory must never override it.
+  [...memCustomer, 'sua-chua-y', 'Sữa Chua Uống Y', 'Hộp', '01/07/2026', '1', '20000', '', '20000', ''],
+]
+const memIndex = parseBillMarkdown([
+  markdownRow(headers),
+  `|:${headers.map(() => '---').join('|')}|`,
+  ...memRows.map(markdownRow),
+].join('\n'))
+
+describe('chat-scoped confirmation memory (ADR 0001)', () => {
+  test('resolves an ambiguous branch name from a remembered selection, with visible provenance', () => {
+    const result = resolveBillOrder(index, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'Doris Coffee & Tea House',
+      items: [{ lineId: '1', rawName: 'Richs A', requestedQuantity: 1, requestedUnit: 'Hộp' }],
+      chatMemory: chatMemory({
+        // canonicalized query key: accents folded, coffee → cafe
+        customerSelections: [{ queryKey: 'doris cafe tea house', customerCode: 'KH004610' }],
+      }),
+    })
+
+    expect(result.customer).toMatchObject({ status: 'resolved', code: 'KH004610' })
+    expect(result.orderDraft?.customerNote).toContain('trong chat')
+  })
+
+  test('a remembered branch that BILL.md no longer lists falls back to asking', () => {
+    const result = resolveBillOrder(index, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'Doris Coffee & Tea House',
+      items: [{ lineId: '1', rawName: 'Richs A', requestedQuantity: 1, requestedUnit: 'Hộp' }],
+      chatMemory: chatMemory({
+        customerSelections: [{ queryKey: 'doris cafe tea house', customerCode: 'KH999999' }],
+      }),
+    })
+
+    expect(result.customer.status).toBe('ambiguous')
+  })
+
+  test('a remembered per-customer alias resolves a shorthand that matches no tokens', () => {
+    const result = resolveBillOrder(memIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MEM01',
+      items: [{ lineId: '1', rawName: 'rich lùn', requestedQuantity: 1, requestedUnit: 'Thùng' }],
+      chatMemory: chatMemory({
+        productAliases: [
+          {
+            customerCode: 'MEM01',
+            aliasKey: normalizeBillText('rich lùn'),
+            productKey: normalizeBillText('Kem Béo Thực Vật Richs (454G) - Hàng Lạnh'),
+          }
+        ],
+      }),
+    })
+
+    expect(result.lines[0]).toMatchObject({
+      status: 'resolved',
+      matched: { productName: 'Kem Béo Thực Vật Richs (454G) - Hàng Lạnh' },
+      evidence: { selectionSource: 'chat_memory' },
+      resolved: { quantity: 1, unit: 'Thùng/24 Hộp', unitPrice: 705_000, lineTotal: 705_000 },
+    })
+    expect(result.orderDraft!.items[0]!.note).toContain('trong chat')
+  })
+
+  test('an alias picks between ambiguous variants only for the customer it was confirmed for', () => {
+    const items: RequestedOrderItem[] = [{ lineId: '1', rawName: 'trân châu trắng', requestedQuantity: 1, requestedUnit: 'Thùng' },]
+    const zionAlias = (customerCode: string) => chatMemory({
+      productAliases: [
+        {
+          customerCode,
+          aliasKey: normalizeBillText('trân châu trắng'),
+          productKey: normalizeBillText('Trân Châu 3Q Zion Trắng'),
+        }
+      ],
+    })
+
+    const withAlias = resolveBillOrder(memIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MEM01',
+      items,
+      chatMemory: zionAlias('MEM01'),
+    })
+    expect(withAlias.lines[0]).toMatchObject({
+      status: 'resolved',
+      matched: { productName: 'Trân Châu 3Q Zion Trắng' },
+      evidence: { selectionSource: 'chat_memory' },
+    })
+
+    const otherCustomerAlias = resolveBillOrder(memIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MEM01',
+      items,
+      chatMemory: zionAlias('KH_OTHER'),
+    })
+    expect(otherCustomerAlias.lines[0]!.status).toBe('needs_product_confirmation')
+  })
+
+  test('a remembered 1:1 unit fills a missing catalog ĐVT for the exact requested unit only', () => {
+    const memory = chatMemory({
+      unitMappings: [
+        {
+          productKey: normalizeBillText('Sinh Tố Bốn Mùa Osterberg Vải'),
+          requestedUnitKey: normalizeBillText('chai'),
+          kind: 'requested-1to1',
+        }
+      ],
+    })
+
+    const matching = resolveBillOrder(memIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MEM01',
+      items: [{ lineId: '1', rawName: 'Sinh tố bốn mùa osterberg vải', requestedQuantity: 2, requestedUnit: 'chai' }],
+      chatMemory: memory,
+    })
+    expect(matching.lines[0]).toMatchObject({
+      status: 'resolved',
+      evidence: { unitSource: 'chat_memory' },
+      resolved: { quantity: 2, unit: 'chai', unitPrice: 135_000, lineTotal: 270_000 },
+    })
+    expect(matching.orderDraft!.items[0]!.note).toContain('trong chat')
+
+    const otherUnit = resolveBillOrder(memIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MEM01',
+      items: [{ lineId: '1', rawName: 'Sinh tố bốn mùa osterberg vải', requestedQuantity: 2, requestedUnit: 'lon' }],
+      chatMemory: memory,
+    })
+    expect(otherUnit.lines[0]!.status).toBe('needs_unit_confirmation')
+  })
+
+  test('a remembered requested-equals-catalog mapping applies only while the catalog unit is unchanged', () => {
+    const mapping = (catalogUnitKey: string) => chatMemory({
+      unitMappings: [
+        {
+          productKey: normalizeBillText('Trân Châu 3Q Talinh Trắng'),
+          requestedUnitKey: normalizeBillText('bì'),
+          kind: 'requested-equals-catalog',
+          catalogUnitKey,
+        }
+      ],
+    })
+    const items: RequestedOrderItem[] = [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 2, requestedUnit: 'bì' },]
+
+    const current = resolveBillOrder(mismatchIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MC001',
+      items,
+      chatMemory: mapping(normalizeBillText('Gói')),
+    })
+    expect(current.lines[0]).toMatchObject({
+      status: 'resolved',
+      evidence: { unitSource: 'chat_memory' },
+      resolved: { quantity: 2, unit: 'Gói', unitPrice: 45_000, lineTotal: 90_000, unitConfirmed: true },
+    })
+
+    const staleCatalog = resolveBillOrder(mismatchIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MC001',
+      items,
+      chatMemory: mapping(normalizeBillText('Túi')),
+    })
+    expect(staleCatalog.lines[0]!.status).toBe('needs_unit_confirmation')
+  })
+
+  test('a remembered price confirmation applies only while the computed price is identical', () => {
+    const priceMemory = (price: number) => chatMemory({
+      priceConfirmations: [
+        {
+          customerCode: 'BK001',
+          productKey: normalizeBillText('Trà Q 1Kg'),
+          price,
+        }
+      ],
+    })
+
+    const samePrice = resolveBillOrder(baoKhachIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'BK001',
+      items: [{ lineId: 'b', rawName: 'Trà Q', requestedQuantity: 1, requestedUnit: 'Hộp' }],
+      chatMemory: priceMemory(152_000),
+    })
+    expect(samePrice.lines[0]).toMatchObject({
+      status: 'resolved',
+      resolved: { unitPrice: 152_000 },
+    })
+    expect(samePrice.orderDraft!.items[0]!.note).toContain('trong chat')
+
+    const changedPrice = resolveBillOrder(baoKhachIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'BK001',
+      items: [{ lineId: 'b', rawName: 'Trà Q', requestedQuantity: 1, requestedUnit: 'Hộp' }],
+      chatMemory: priceMemory(150_000),
+    })
+    expect(changedPrice.lines[0]!.status).toBe('needs_price_confirmation')
+  })
+
+  test('a remembered price confirmation also clears a "Hỏi lại giá" flag at the same price', () => {
+    const result = resolveBillOrder(memIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MEM01',
+      items: [{ lineId: '1', rawName: 'Bột sương sáo', requestedQuantity: 1, requestedUnit: 'Gói' }],
+      chatMemory: chatMemory({
+        priceConfirmations: [
+          {
+            customerCode: 'MEM01',
+            productKey: normalizeBillText('Bột Sương Sáo X'),
+            price: 40_000,
+          }
+        ],
+      }),
+    })
+
+    expect(result.lines[0]).toMatchObject({
+      status: 'resolved',
+      resolved: { unitPrice: 40_000, lineTotal: 40_000 },
+    })
+  })
+
+  test('catalog evidence always beats memory: a 1:1 unit never overrides an existing catalog ĐVT', () => {
+    const result = resolveBillOrder(memIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'MEM01',
+      items: [{ lineId: '1', rawName: 'Sữa chua uống Y', requestedQuantity: 1, requestedUnit: 'chai' }],
+      chatMemory: chatMemory({
+        unitMappings: [
+          {
+            productKey: normalizeBillText('Sữa Chua Uống Y'),
+            requestedUnitKey: normalizeBillText('chai'),
+            kind: 'requested-1to1',
+          }
+        ],
+      }),
+    })
+
+    expect(result.lines[0]!.status).toBe('needs_unit_confirmation')
+    expect(result.lines[0]!.evidence.unitSource).toBe('history')
+  })
+})
+
+describe('collectChatMemory', () => {
+  test('records a staff branch selection under the original ambiguous query', () => {
+    const request = {
+      customerQuery: 'Doris Coffee & Tea House',
+      items: [{ lineId: '1', rawName: 'Richs A', requestedQuantity: 1, requestedUnit: 'Hộp' }],
+      selections: [{ lineId: '$customer', candidateId: 'customer:KH004610' }],
+      confirmations: [],
+    }
+    const output = resolveBillOrder(index, { draftId: crypto.randomUUID(), ...request })
+    expect(output.customer.status).toBe('resolved')
+
+    const memory = collectChatMemory({ memory: emptyChatOrderMemory(), request, output })
+
+    expect(memory.customerSelections).toContainEqual({
+      queryKey: customerQueryKey('Doris Coffee & Tea House'),
+      customerCode: 'KH004610',
+    })
+  })
+
+  test('records the branch under the previous query when staff replied with the code instead', () => {
+    const request = {
+      customerQuery: 'KH004610',
+      items: [{ lineId: '1', rawName: 'Richs A', requestedQuantity: 1, requestedUnit: 'Hộp' }],
+      selections: [],
+      confirmations: [],
+    }
+    const output = resolveBillOrder(index, { draftId: crypto.randomUUID(), ...request })
+
+    const memory = collectChatMemory({
+      memory: emptyChatOrderMemory(),
+      previousQuery: 'Doris Coffee & Tea House',
+      request,
+      output,
+    })
+
+    expect(memory.customerSelections).toContainEqual({
+      queryKey: customerQueryKey('Doris Coffee & Tea House'),
+      customerCode: 'KH004610',
+    })
+  })
+
+  test('records an alias when staff rename a shorthand line to a resolvable product', () => {
+    const request = {
+      customerQuery: 'MEM01',
+      items: [{ lineId: '1', rawName: 'Kem Béo Thực Vật Richs', requestedQuantity: 1, requestedUnit: 'Thùng' }],
+      selections: [],
+      confirmations: [],
+    }
+    const output = resolveBillOrder(memIndex, { draftId: crypto.randomUUID(), ...request })
+    expect(output.lines[0]!.status).toBe('resolved')
+
+    const memory = collectChatMemory({
+      memory: emptyChatOrderMemory(),
+      previousItems: [{ lineId: '1', rawName: 'rich lùn', requestedQuantity: 1, requestedUnit: 'Thùng' }],
+      request,
+      output,
+    })
+
+    expect(memory.productAliases).toContainEqual({
+      customerCode: 'MEM01',
+      aliasKey: normalizeBillText('rich lùn'),
+      productKey: normalizeBillText('Kem Béo Thực Vật Richs (454G) - Hàng Lạnh'),
+    })
+  })
+
+  test('records an alias when staff select a candidate for an ambiguous shorthand', () => {
+    const items = [{ lineId: '1', rawName: 'trân châu trắng', requestedQuantity: 1, requestedUnit: 'Thùng' }]
+    const pending = resolveBillOrder(memIndex, { draftId: crypto.randomUUID(), customerQuery: 'MEM01', items })
+    const zion = pending.lines[0]!.candidates.find(candidate => candidate.productName.includes('Zion'))!
+
+    const request = {
+      customerQuery: 'MEM01',
+      items,
+      selections: [{ lineId: '1', candidateId: zion.candidateId }],
+      confirmations: [],
+    }
+    const output = resolveBillOrder(memIndex, { draftId: crypto.randomUUID(), ...request })
+    expect(output.lines[0]!.matched?.productName).toBe('Trân Châu 3Q Zion Trắng')
+
+    const memory = collectChatMemory({ memory: emptyChatOrderMemory(), request, output })
+
+    expect(memory.productAliases).toContainEqual({
+      customerCode: 'MEM01',
+      aliasKey: normalizeBillText('trân châu trắng'),
+      productKey: normalizeBillText('Trân Châu 3Q Zion Trắng'),
+    })
+  })
+
+  test('records a 1:1 unit confirmation as a product-level unit mapping', () => {
+    const items = [{ lineId: '1', rawName: 'Sinh tố bốn mùa osterberg vải', requestedQuantity: 1, requestedUnit: 'chai' }]
+    const pending = resolveBillOrder(memIndex, { draftId: crypto.randomUUID(), customerQuery: 'MEM01', items })
+    const { confirmationId } = pending.lines[0]!.confirmations[0]!
+
+    const request = { customerQuery: 'MEM01', items, selections: [], confirmations: [{ lineId: '1', confirmationId }] }
+    const output = resolveBillOrder(memIndex, { draftId: crypto.randomUUID(), ...request })
+    expect(output.lines[0]!.status).toBe('resolved')
+
+    const memory = collectChatMemory({ memory: emptyChatOrderMemory(), request, output })
+
+    expect(memory.unitMappings).toContainEqual({
+      productKey: normalizeBillText('Sinh Tố Bốn Mùa Osterberg Vải'),
+      requestedUnitKey: normalizeBillText('chai'),
+      kind: 'requested-1to1',
+    })
+  })
+
+  test('records a requested-equals-catalog confirmation with the catalog unit it was made against', () => {
+    const items = [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 2, requestedUnit: 'bì' }]
+    const pending = resolveBillOrder(mismatchIndex, { draftId: crypto.randomUUID(), customerQuery: 'MC001', items })
+    const { confirmationId } = pending.lines[0]!.confirmations[0]!
+
+    const request = { customerQuery: 'MC001', items, selections: [], confirmations: [{ lineId: '1', confirmationId }] }
+    const output = resolveBillOrder(mismatchIndex, { draftId: crypto.randomUUID(), ...request })
+    expect(output.lines[0]!.status).toBe('resolved')
+
+    const memory = collectChatMemory({ memory: emptyChatOrderMemory(), request, output })
+
+    expect(memory.unitMappings).toContainEqual({
+      productKey: normalizeBillText('Trân Châu 3Q Talinh Trắng'),
+      requestedUnitKey: normalizeBillText('bì'),
+      kind: 'requested-equals-catalog',
+      catalogUnitKey: normalizeBillText('Gói'),
+    })
+  })
+
+  test('records an approved price with its exact value', () => {
+    const items = [{ lineId: 'b', rawName: 'Trà Q', requestedQuantity: 1, requestedUnit: 'Hộp' }]
+    const pending = resolveBillOrder(baoKhachIndex, { draftId: crypto.randomUUID(), customerQuery: 'BK001', items })
+    const confirmation = pending.lines[0]!.confirmations.find(entry => entry.kind === 'price')!
+
+    const request = {
+      customerQuery: 'BK001',
+      items,
+      selections: [],
+      confirmations: [{ lineId: 'b', confirmationId: confirmation.confirmationId }],
+    }
+    const output = resolveBillOrder(baoKhachIndex, { draftId: crypto.randomUUID(), ...request })
+    expect(output.lines[0]!.status).toBe('resolved')
+
+    const memory = collectChatMemory({ memory: emptyChatOrderMemory(), request, output })
+
+    expect(memory.priceConfirmations).toContainEqual({
+      customerCode: 'BK001',
+      productKey: normalizeBillText('Trà Q 1Kg'),
+      price: 152_000,
+    })
+  })
+
+  test('re-confirming overwrites instead of duplicating an entry', () => {
+    const request = {
+      customerQuery: 'Doris Coffee & Tea House',
+      items: [{ lineId: '1', rawName: 'Richs A', requestedQuantity: 1, requestedUnit: 'Hộp' }],
+      selections: [{ lineId: '$customer', candidateId: 'customer:KH004611' }],
+      confirmations: [],
+    }
+    const output = resolveBillOrder(index, { draftId: crypto.randomUUID(), ...request })
+    const existing = emptyChatOrderMemory()
+    existing.customerSelections.push({ queryKey: customerQueryKey('Doris Coffee & Tea House'), customerCode: 'KH004610' })
+
+    const memory = collectChatMemory({ memory: existing, request, output })
+
+    expect(memory.customerSelections).toHaveLength(1)
+    expect(memory.customerSelections[0]).toMatchObject({ customerCode: 'KH004611' })
   })
 })
