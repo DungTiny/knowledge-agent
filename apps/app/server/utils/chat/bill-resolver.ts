@@ -266,10 +266,23 @@ function isPositiveHistory(row: BillRow): boolean {
   return row['Thời gian'] !== BILL_STATIC_DATE && quantity !== null && quantity > 0
 }
 
+/**
+ * Explicit alias dictionary (see ORDER-AGENT-CONTRACT §3): maps confirmed
+ * customer vocabulary to the token BILL.md uses. Never semantic guessing.
+ */
+const PRODUCT_TOKEN_SYNONYMS: Record<string, string> = {
+  // Khách gọi "siro"; BILL.md ghi "Syrup" (vd: Syrup Davinci Vải 750ml).
+  siro: 'syrup',
+}
+
+function canonicalProductToken(token: string): string {
+  return PRODUCT_TOKEN_SYNONYMS[token] ?? token
+}
+
 function productMatches(row: BillRow, rawName: string): boolean {
-  const queryTokens = tokens(rawName)
+  const queryTokens = tokens(rawName).map(canonicalProductToken)
   if (queryTokens.length === 0) return false
-  const haystack = `${normalizeBillText(row['Tên hàng'])} ${normalizeBillText(row['Mã hàng'])}`
+  const haystack = tokens(`${row['Tên hàng']} ${row['Mã hàng']}`).map(canonicalProductToken).join(' ')
   return queryTokens.every(token => haystack.includes(token))
 }
 

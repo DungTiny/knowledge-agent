@@ -242,6 +242,42 @@ describe('ĐVT derived from the product name when the column is blank', () => {
   })
 })
 
+const siroCustomer = ['SR001', 'CF Siro Đà Nẵng', 'BG11']
+const siroRows = [
+  [...siroCustomer, 'quynhdv', 'Syrup Davinci Vải 750ml', 'Chai', '01/07/2026', '1', '190000', '', '190000', ''],
+  [...siroCustomer, 'quynhdavn', 'Syrup Davinci Đào 750ml', 'Chai', '02/07/2026', '1', '190000', '', '190000', ''],
+]
+const siroIndex = parseBillMarkdown([
+  markdownRow(headers),
+  `|:${headers.map(() => '---').join('|')}|`,
+  ...siroRows.map(markdownRow),
+].join('\n'))
+
+describe('customer vocabulary synonym: siro = syrup', () => {
+  test('resolves "siro vải" and "siro đào" to the Syrup catalog rows', () => {
+    const result = resolveBillOrder(siroIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'SR001',
+      items: [
+        { lineId: '1', rawName: 'siro vải', requestedQuantity: 1, requestedUnit: 'Chai' },
+        { lineId: '2', rawName: 'siro đào', requestedQuantity: 2, requestedUnit: 'Chai' },
+      ],
+    })
+
+    expect(result.lines[0]).toMatchObject({
+      status: 'resolved',
+      matched: { productName: 'Syrup Davinci Vải 750ml' },
+      resolved: { quantity: 1, unitPrice: 190_000, lineTotal: 190_000 },
+    })
+    expect(result.lines[1]).toMatchObject({
+      status: 'resolved',
+      matched: { productName: 'Syrup Davinci Đào 750ml' },
+      resolved: { quantity: 2, unitPrice: 190_000, lineTotal: 380_000 },
+    })
+    expect(result.orderDraft).toMatchObject({ pendingCount: 0, totalAmount: 570_000 })
+  })
+})
+
 const mismatchCustomer = ['MC001', '43 House CF', 'BG7']
 const mismatchRows = [
   [...mismatchCustomer, 'tran-chau-trang', 'Trân Châu 3Q Talinh Trắng', 'Gói', '01/07/2026', '1', '45000', '', '45000', ''],

@@ -269,6 +269,10 @@ Precedence:
   date other than `31/12/2026`, and numeric quantity `> 0`.
 - Match exact SKU/name first, then deterministic all-token name matching and an
   explicit alias dictionary. Do not use unconstrained semantic guessing.
+- The alias dictionary (`PRODUCT_TOKEN_SYNONYMS` in `bill-resolver.ts`) maps
+  confirmed customer vocabulary to catalog tokens: `siro` → `syrup`, so
+  "1 siro vải" / "2 siro đào" match `Syrup Davinci Vải/Đào 750ml`. The agent
+  passes `rawName` exactly as entered; the mapping runs server-side only.
 - A `dùng loại này` static rule wins.
 - If a generic request matches one positive-history variant, select it.
 - If multiple variants remain and recency/frequency disagree, return candidates

@@ -132,6 +132,10 @@ not assume data from an earlier order or an earlier sandbox snapshot is still cu
 
 - A message is an order when it contains at least one product line with quantity + unit
   and a customer-identifying line. The phrase "lên đơn" is optional.
+- Customers write "siro" for products BILL.md stores as "Syrup" ("1 siro vải",
+  "2 siro đào" → Syrup ... Vải/Đào). Treat such lines as normal order lines and pass
+  rawName exactly as entered — the resolver maps the synonym itself; never rewrite it
+  or reject the line as unknown.
 - "Done" is only an input terminator, never a customer or product.
 - A reply that confirms/changes a previously presented order remains an order workflow.
 
