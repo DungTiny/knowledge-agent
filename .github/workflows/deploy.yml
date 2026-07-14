@@ -59,7 +59,7 @@ jobs:
 
       - name: Deploy to server
         run: |
-          ssh -o StrictHostKeyChecking=yes "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<EOF
+          ssh -o StrictHostKeyChecking=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=20 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<EOF
             set -euo pipefail
 
             cd /root/apps/knowledge-agent
