@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { createPresentOrderTool } from '../shared/utils/tools/present-order'
+import { createPresentOrderTool, presentOrderInputSchema } from '../shared/utils/tools/present-order'
 import type { OrderDraft } from '../shared/utils/uom'
 
 const toolOptions = { toolCallId: 'call-1', messages: [] }
@@ -50,6 +50,18 @@ const tamperedInput = {
 }
 
 describe('present_order trust boundary', () => {
+  test('accepts omitted null totals for pending lines when a resolver draftId is present', () => {
+    const pendingInput = {
+      ...tamperedInput,
+      items: [{ name: 'mứt ổi', quantity: 0, unit: '', orderedQuantity: 1 }],
+      totalQuantity: 1,
+      totalAmount: 0,
+      pendingCount: 1,
+    }
+
+    expect(presentOrderInputSchema.parse(pendingInput).items[0]).toMatchObject({ name: 'mứt ổi' })
+  })
+
   // The bug: the model re-typed the resolver draft into present_order and invented
   // 150.000đ for matcha; the card rendered it because unitPrice was trusted.
   test('renders the stored resolver draft, ignoring a tampered model price', async () => {

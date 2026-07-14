@@ -1,7 +1,7 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import { kv } from '@nuxthub/kv'
-import { collectChatMemory, emptyChatOrderMemory, parseBillMarkdown, resolveBillOrder } from './bill-resolver'
+import { collectChatMemory, emptyChatOrderMemory, normalizeRequestedOrderItem, parseBillMarkdown, resolveBillOrder } from './bill-resolver'
 import type { BillIndex, BillOrderConfirmation, BillOrderSelection, ChatOrderMemory, RequestedOrderItem, ResolvedOrderDraft } from './bill-resolver'
 import type { SandboxBillSource } from './bill-source'
 
@@ -68,6 +68,14 @@ function mergeByKey<T>(current: T[], incoming: T[], key: (value: T) => string): 
   return [...merged.values()]
 }
 
+/** A revision may contain only renamed/changed lines; keep the rest of the draft. */
+export function mergeRequestedOrderItems(
+  current: RequestedOrderItem[],
+  incoming: RequestedOrderItem[],
+): RequestedOrderItem[] {
+  return mergeByKey(current, incoming.map(normalizeRequestedOrderItem), value => value.lineId)
+}
+
 export function createResolveBillOrderTool(
   chatId: string,
   loadBillSource: () => Promise<SandboxBillSource>,
@@ -84,9 +92,15 @@ export function createResolveBillOrderTool(
         throw new Error(`Order draft not found or expired: ${input.draftId}`)
       }
 
+      const incomingItems = input.items
+        ? (input.items as RequestedOrderItem[]).map(normalizeRequestedOrderItem)
+        : null
+
       const state: StoredBillDraft = {
         customerQuery: input.customerQuery ?? stored!.customerQuery,
-        items: (input.items ?? stored!.items) as RequestedOrderItem[],
+        items: incomingItems
+          ? stored ? mergeRequestedOrderItems(stored.items, incomingItems) : incomingItems
+          : stored!.items,
         selections: mergeByKey(
           stored?.selections ?? [],
           input.selections as BillOrderSelection[],

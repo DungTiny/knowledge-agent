@@ -35,6 +35,41 @@ export interface RequestedOrderItem {
   requestedUnit: string
 }
 
+const LEADING_ORDER_UNIT_PATTERN = /^(?:hộp|hop|hũ|hu|gói|goi|túi|tui|bịch|bich|bì|bi|chai|lọ|lo|thùng|thung|lốc|loc|lạng|lang|kg|gr|g|ml|lít|lit|cuộn|cuon|xâu|xau|cái|cai|lon)(?=\s|$)/iu
+const ATTACHED_PRODUCT_SHORTHAND_PATTERN = /^(?:siro|srio|sto|ong|puding|richs?|base)(?=\s|$)/iu
+
+/**
+ * Models occasionally copy the complete quantity clause into rawName even
+ * though quantity and unit have their own fields (for example
+ * `1bi bột matcha`). Normalize that transport error at the server boundary so
+ * product lookup remains deterministic. A compact product name such as `3Q
+ * Trân Châu` is preserved because `Q` is neither a unit nor a known shorthand.
+ */
+export function normalizeRequestedOrderItem(item: RequestedOrderItem): RequestedOrderItem {
+  const rawName = item.rawName.trim()
+  const quantityPrefix = rawName.match(/^(\d+(?:[.,]\d+)?)(\s*)/u)
+  if (!quantityPrefix) return { ...item, rawName }
+
+  const parsedQuantity = Number(quantityPrefix[1]!.replace(',', '.'))
+  if (!Number.isFinite(parsedQuantity) || Math.abs(parsedQuantity - item.requestedQuantity) > 1e-9) {
+    return { ...item, rawName }
+  }
+
+  let productName = rawName.slice(quantityPrefix[0].length).trimStart()
+  const quantityWasSeparated = quantityPrefix[2]!.length > 0
+  const startsWithUnit = LEADING_ORDER_UNIT_PATTERN.test(productName)
+  const startsWithKnownShorthand = ATTACHED_PRODUCT_SHORTHAND_PATTERN.test(productName)
+  if (!quantityWasSeparated && !startsWithUnit && !startsWithKnownShorthand) {
+    return { ...item, rawName }
+  }
+
+  const unitPrefix = productName.match(LEADING_ORDER_UNIT_PATTERN)
+  if (unitPrefix) productName = productName.slice(unitPrefix[0].length).trimStart()
+
+  const requestedUnit = item.requestedUnit.trim() || unitPrefix?.[0] || ''
+  return productName ? { ...item, rawName: productName, requestedUnit } : { ...item, rawName }
+}
+
 export interface BillOrderSelection {
   lineId: string
   candidateId: string
@@ -97,8 +132,8 @@ export interface ResolvedBillLine {
   matched?: { sku: string, canonicalSku: string, productName: string }
   evidence: {
     selectionSource?: 'positive_history' | 'static_price' | 'staff_confirmation' | 'chat_memory'
-    priceSource?: 'latest_positive_history' | 'static_price'
-    unitSource?: 'history' | 'history_quantity_pattern' | 'static_price' | 'business_override' | 'product_name' | 'positive_history' | 'implicit_each' | 'staff_confirmation' | 'chat_memory'
+    priceSource?: 'latest_positive_history' | 'static_price' | 'global_reference'
+    unitSource?: 'history' | 'history_quantity_pattern' | 'static_price' | 'global_reference' | 'business_override' | 'product_name' | 'positive_history' | 'implicit_each' | 'staff_confirmation' | 'chat_memory'
     rowDates: string[]
   }
   candidates: Array<{ candidateId: string, sku: string, productName: string, reason: string }>
@@ -339,6 +374,8 @@ function isPositiveHistory(row: BillRow): boolean {
 const PRODUCT_TOKEN_SYNONYMS: Record<string, string> = {
   // Khách gọi "siro"; BILL.md ghi "Syrup" (vd: Syrup Davinci Vải 750ml).
   siro: 'syrup',
+  // Frequent transposition typo in compact order messages: "srio" → "syrup".
+  srio: 'syrup',
   // F&B shorthand: "bột béo" is the same catalog family as "bột sữa".
   beo: 'sua',
   // Staff/customer shorthand for the Flago creme-brulee powder variant.
@@ -561,6 +598,24 @@ function staticRowsForCustomer(index: BillIndex, customerCode: string): BillRow[
   )
 }
 
+/**
+ * Product discovery fallback for a staff-confirmed new item. Rows stay inside
+ * the customer's own price-list names; they are never preference evidence and
+ * their price is never accepted without an explicit resolver confirmation.
+ */
+function referenceRowsForCustomerPriceLists(index: BillIndex, customerCode: string): BillRow[] {
+  const priceLists = new Set(index.rows
+    .filter(row => row['Mã khách hàng'] === customerCode)
+    .map(row => row['Bảng giá'])
+    .filter(Boolean))
+  if (priceLists.size === 0) return []
+  return dedupeRows(index.rows.filter(row =>
+    row['Mã khách hàng'] !== customerCode
+    && priceLists.has(row['Bảng giá'])
+    && isPositiveHistory(row),
+  ))
+}
+
 function latestRows(rows: BillRow[]): BillRow[] {
   if (rows.length === 0) return []
   const sorted = [...rows].sort((a, b) => parseDate(b['Thời gian']) - parseDate(a['Thời gian']))
@@ -603,6 +658,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
 
   const historyScope = dedupeRows(index.rows.filter(row => row['Mã khách hàng'] === customerCode && isPositiveHistory(row)))
   const staticScope = dedupeRows(staticRowsForCustomer(index, customerCode))
+  const priceListReferenceScope = referenceRowsForCustomerPriceLists(index, customerCode)
   let historyMatches = narrowLeadingCategory(
     narrowFlavorVariant(
       narrowByRequestedUnit(historyScope.filter(row => productMatches(row, item.rawName)), item.requestedUnit),
@@ -633,7 +689,22 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     }
   }
 
-  const candidateRows = historyMatches.length > 0 ? historyMatches : staticMatches
+  let candidateRows = historyMatches.length > 0 ? historyMatches : staticMatches
+  let referenceMatches: BillRow[] = []
+  if (candidateRows.length === 0) {
+    referenceMatches = narrowLeadingCategory(
+      narrowFlavorVariant(
+        narrowByRequestedUnit(
+          priceListReferenceScope.filter(row => productMatches(row, item.rawName)),
+          item.requestedUnit,
+        ),
+        item.rawName,
+      ),
+      item.rawName,
+    )
+    candidateRows = referenceMatches
+  }
+  const usesPriceListReference = referenceMatches.length > 0
   const candidateGroups = new Map<string, BillRow[]>()
   for (const row of candidateRows) {
     const key = normalizeBillText(row['Tên hàng'])
@@ -648,7 +719,11 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       candidateId: productCandidateId(item.lineId, newest['Tên hàng']),
       sku: newest['Mã hàng'],
       productName: newest['Tên hàng'],
-      reason: historyMatches.length > 0 ? 'Có trong lịch sử mua thực của khách hàng' : 'Chỉ có trong bảng giá tĩnh',
+      reason: historyMatches.length > 0
+        ? 'Có trong lịch sử mua thực của khách hàng'
+        : usesPriceListReference
+          ? 'Mặt hàng mới: có trong cùng bảng giá nhưng khách chưa từng mua'
+          : 'Chỉ có trong bảng giá tĩnh',
     }
   })
 
@@ -661,14 +736,14 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       selectionSource = 'staff_confirmation'
     }
   }
-  if (!selectedProduct && candidateGroups.size === 1) {
+  if (!selectedProduct && candidateGroups.size === 1 && !usesPriceListReference) {
     selectedProduct = candidates[0]!.productName
     selectionSource = aliasApplied
       ? 'chat_memory'
       : historyMatches.length > 0 ? 'positive_history' : 'static_price'
     if (aliasApplied) usedChatMemory = true
   }
-  if (!selectedProduct) {
+  if (!selectedProduct && !usesPriceListReference) {
     const exact = candidates.filter(candidate => normalizeBillText(candidate.productName) === normalizeBillText(item.rawName))
     if (exact.length === 1) {
       selectedProduct = exact[0]!.productName
@@ -733,19 +808,32 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     item.requestedUnit,
     item.requestedQuantity,
   )
+  const productReference = scopeRowsToRequest(
+    referenceMatches.filter(row => normalizeBillText(row['Tên hàng']) === productKey),
+    item.requestedUnit,
+    item.requestedQuantity,
+  )
   const newestHistoryRows = latestRows(productHistory)
-  const newest = newestHistoryRows[0] ?? productStatic[0]!
+  const newest = newestHistoryRows[0] ?? productStatic[0] ?? latestRows(productReference)[0]!
   const sku = newest['Mã hàng']
   const matched = { sku, canonicalSku: canonicalSku(sku), productName: newest['Tên hàng'] }
 
   const historyPrices = unique(newestPricedRows(productHistory).map(row => parseNumber(row['Giá bán'])).filter((price): price is number => price !== null && price > 0))
   const staticPrices = unique(productStatic.map(row => parseNumber(row['Giá bán'])).filter((price): price is number => price !== null && price > 0))
+  const referencePrices = unique(newestPricedRows(productReference).map(row => parseNumber(row['Giá bán'])).filter((price): price is number => price !== null && price > 0))
   const price = historyPrices.length === 1
     ? historyPrices[0]!
-    : historyPrices.length === 0 && staticPrices.length === 1 ? staticPrices[0]! : null
+    : historyPrices.length === 0 && staticPrices.length === 1
+      ? staticPrices[0]!
+      : historyPrices.length === 0 && staticPrices.length === 0 && referencePrices.length === 1
+        ? referencePrices[0]!
+        : null
+  const usesReferencePrice = historyPrices.length === 0 && staticPrices.length === 0 && referencePrices.length === 1
   const priceSource = historyPrices.length === 1
     ? 'latest_positive_history' as const
-    : price !== null ? 'static_price' as const : undefined
+    : staticPrices.length === 1
+      ? 'static_price' as const
+      : usesReferencePrice ? 'global_reference' as const : undefined
 
   const priceConfirmationId = `price:${encodeURIComponent(item.lineId)}:use-current`
   const flags = warningText(productStatic)
@@ -769,8 +857,8 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       parseDate(row['Thời gian']) >= priceFlagTimestamp && parseNumber(row['Giá bán']) === price)
   const priceFlagged = /hỏi\s*lại\s*giá/i.test(flags)
     || (/báo\s*tăng/i.test(flags) && !acceptedDatedIncrease)
-  if (priceFlagged && !confirmedIds.has(priceConfirmationId) && memoryPriceApproved) usedChatMemory = true
-  const priceNeedsConfirmation = priceFlagged
+  if ((priceFlagged || usesReferencePrice) && !confirmedIds.has(priceConfirmationId) && memoryPriceApproved) usedChatMemory = true
+  const priceNeedsConfirmation = (priceFlagged || usesReferencePrice)
     && !confirmedIds.has(priceConfirmationId)
     && !memoryPriceApproved
 
@@ -778,6 +866,9 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     .sort((a, b) => parseDate(b['Thời gian']) - parseDate(a['Thời gian']))
     .find(row => isValidCatalogUnit(row['ĐVT']))
   const staticUnitRow = productStatic.find(row => isValidCatalogUnit(row['ĐVT']))
+  const referenceUnitRow = [...productReference]
+    .sort((a, b) => parseDate(b['Thời gian']) - parseDate(a['Thời gian']))
+    .find(row => isValidCatalogUnit(row['ĐVT']))
   const overrideUnit = businessUnitOverride(selectedProduct)
   // ĐVT column blank but the packaging + size sits in the product name ("... Túi 1Kg").
   const nameUnit = unitFromProductName(selectedProduct)
@@ -793,14 +884,14 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   const confirmedUnit = draftConfirmedUnit ?? memoryUnit
   const requestedPackaging = ['goi', 'tui', 'bi', 'bich'].includes(normalizeBillText(item.requestedUnit))
   const productCarriesMeasure = /\d+(?:[.,]\d+)?\s*(?:kg|g|gr|gram|ml|l)\b/i.test(selectedProduct)
-  const implicitRequestedUnit = !historyUnitRow && !staticUnitRow && !overrideUnit && !nameUnit
+  const implicitRequestedUnit = !historyUnitRow && !staticUnitRow && !referenceUnitRow && !overrideUnit && !nameUnit
     && requestedPackaging && productCarriesMeasure
     ? item.requestedUnit
     : null
   // If neither the customer nor BILL states a unit, quantity is already the
   // catalog count (one price-bearing row = one item). Use an honest neutral
   // label instead of forcing the model to invent "chai", "hộp", etc.
-  const implicitEachUnit = !item.requestedUnit.trim() && !historyUnitRow && !staticUnitRow
+  const implicitEachUnit = !item.requestedUnit.trim() && !historyUnitRow && !staticUnitRow && !referenceUnitRow
     && !overrideUnit && !nameUnit
     ? 'Đơn vị'
     : null
@@ -808,7 +899,9 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     ? catalogUnitForBilling(historyUnitRow['ĐVT'])
     : staticUnitRow
       ? catalogUnitForBilling(staticUnitRow['ĐVT'])
-      : overrideUnit ?? nameUnit ?? implicitRequestedUnit ?? implicitEachUnit ?? confirmedUnit
+      : referenceUnitRow
+        ? catalogUnitForBilling(referenceUnitRow['ĐVT'])
+        : overrideUnit ?? nameUnit ?? implicitRequestedUnit ?? implicitEachUnit ?? confirmedUnit
   // The catalog has a ĐVT but the customer ordered in another unit ("1 bì" of a
   // "Gói" product). Staff can map it 1:1; until they do, the line stays pending.
   const mappingConfirmationId = `unit:${encodeURIComponent(item.lineId)}:requested-equals-catalog`
@@ -832,6 +925,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       : historyUnitRow
         ? unitMappedByHistory ? 'history_quantity_pattern' as const : 'history' as const
         : staticUnitRow ? 'static_price' as const
+        : referenceUnitRow ? 'global_reference' as const
         : overrideUnit ? 'business_override' as const
         : nameUnit ? 'product_name' as const
         : implicitRequestedUnit ? 'positive_history' as const
@@ -854,7 +948,9 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       confirmationId: priceConfirmationId,
       kind: 'price',
       label: price === null ? 'Xác nhận lại giá' : `Xác nhận dùng giá ${price.toLocaleString('vi-VN')}đ`,
-      reason: 'Bảng giá có ghi chú Hỏi lại giá/Báo tăng',
+      reason: usesReferencePrice
+        ? 'Khách chưa từng mua; đây là giá mới nhất của cùng SKU trong cùng bảng giá'
+        : 'Bảng giá có ghi chú Hỏi lại giá/Báo tăng',
     })
   }
 
@@ -866,14 +962,21 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       selectionSource,
       priceSource,
       unitSource,
-      rowDates: unique(productHistory.map(row => row['Thời gian'])).slice(0, 5),
+      rowDates: unique((productHistory.length > 0
+        ? productHistory
+        : productStatic.length > 0 ? productStatic : productReference)
+        .map(row => row['Thời gian'])).slice(0, 5),
     },
     candidates,
     confirmations,
   }
 
   if (price === null || priceNeedsConfirmation) {
-    const warning = price === null ? 'Cần xác nhận giá bán' : 'Cần xác nhận giá theo ghi chú bảng giá'
+    const warning = price === null
+      ? 'Cần xác nhận giá bán'
+      : usesReferencePrice
+        ? 'Mặt hàng mới: cần xác nhận giá tham khảo từ cùng bảng giá'
+        : 'Cần xác nhận giá theo ghi chú bảng giá'
     return finalize({ ...base, status: 'needs_price_confirmation', warning })
   }
   if (!unit) {
@@ -957,6 +1060,34 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   }
 
   return finalize({ ...base, status: 'resolved', resolved })
+}
+
+/**
+ * The left side of `requested words - catalog annotation` is authoritative.
+ * Only when it cannot identify a product may the right side disambiguate it.
+ * This preserves `sto đào - ... Vải` as Đào while still using an explicit
+ * `... - Trân Châu 3Q Bibi Jelly Trắng` annotation for a generic left side.
+ */
+function resolveLineWithAnnotation(index: BillIndex, item: RequestedOrderItem, options: {
+  customerCode: string
+  selectedCandidateId?: string
+  confirmedIds: Set<string>
+  memory?: ChatOrderMemory
+}): ResolvedBillLine {
+  const annotationSeparator = item.rawName.indexOf(' - ')
+  if (annotationSeparator <= 0) return resolveLine(index, item, options)
+
+  const requestedName = item.rawName.slice(0, annotationSeparator).trim()
+  const annotationName = item.rawName.slice(annotationSeparator + 3).trim()
+  if (!requestedName || !annotationName) return resolveLine(index, item, options)
+
+  const primary = resolveLine(index, { ...item, rawName: requestedName }, options)
+  if (primary.status !== 'not_found' && primary.status !== 'needs_product_confirmation') return primary
+
+  const annotated = resolveLine(index, { ...item, rawName: annotationName }, options)
+  return annotated.status !== 'not_found' && annotated.status !== 'needs_product_confirmation'
+    ? annotated
+    : primary
 }
 
 function upsert<T>(entries: T[], entry: T, key: (value: T) => string): T[] {
@@ -1113,7 +1244,8 @@ export function resolveBillOrder(index: BillIndex, request: ResolveBillOrderRequ
 
   const { customer } = customerResolution
   const customerFromMemory = 'fromMemory' in customerResolution && customerResolution.fromMemory === true
-  const lines = request.items.map(item => resolveLine(index, item, {
+  const normalizedItems = request.items.map(normalizeRequestedOrderItem)
+  const lines = normalizedItems.map(item => resolveLineWithAnnotation(index, item, {
     customerCode: customer.code,
     selectedCandidateId: selections.get(item.lineId),
     confirmedIds: confirmationsByLine.get(item.lineId) ?? new Set(),

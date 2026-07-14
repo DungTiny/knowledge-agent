@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { collectChatMemory, customerQueryKey, emptyChatOrderMemory, normalizeBillText, parseBillMarkdown, resolveBillOrder } from '../server/utils/chat/bill-resolver'
-import { resolveBillOrderInputSchema } from '../server/utils/chat/resolve-bill-order-tool'
+import { mergeRequestedOrderItems, resolveBillOrderInputSchema } from '../server/utils/chat/resolve-bill-order-tool'
 import type { ChatOrderMemory, RequestedOrderItem } from '../server/utils/chat/bill-resolver'
 
 const headers = [
@@ -33,6 +33,7 @@ const billRows = [
   [...customer, 'agar', 'Thạch Agar Chuandai Nguyên Vị 3.05Kg', '', '01/07/2026', '1', '247000', '', '247000', ''],
   [...customer, 'tra-lai', 'Lục Trà Lài Lộc Phát 1Kg', 'CẬP NHẬT', '01/07/2026', '1', '152000', '', '152000', ''],
   ['KH004610', 'Doris Coffee & Tea House', 'BG4', 'richs-a', 'Richs A', 'Hộp', '01/07/2026', '1', '100000', '', '100000', ''],
+  ['KH004610', 'Doris Coffee & Tea House', 'BG4', 'ber-oi', 'Sinh Tố Berrino Ổi Hồng 1000ml', '', '05/07/2026', '1', '108000', '', '108000', ''],
   ['KH004611', 'Doris Coffee & Tea House', 'BG4', 'richs-b', 'Richs B', 'Hộp', '01/07/2026', '1', '100000', '', '100000', ''],
 ]
 
@@ -52,6 +53,21 @@ describe('resolve_bill_order input', () => {
     })
 
     expect(parsed.items?.[0]?.requestedUnit).toBe('')
+  })
+
+  test('merges corrected revision lines without dropping resolved draft items', () => {
+    const current: RequestedOrderItem[] = [
+      { lineId: '1', rawName: 'bí đao miki', requestedQuantity: 2, requestedUnit: '' },
+      { lineId: '2', rawName: 'rich', requestedQuantity: 5, requestedUnit: '' },
+      { lineId: '3', rawName: 'mứt ổi', requestedQuantity: 1, requestedUnit: '' },
+    ]
+    const correction: RequestedOrderItem = {
+      lineId: '3', rawName: 'sinh tố berrino ổi hồng', requestedQuantity: 1, requestedUnit: '',
+    }
+    const merged = mergeRequestedOrderItems(current, [correction])
+
+    expect(merged).toHaveLength(3)
+    expect(merged.map(item => item.rawName)).toEqual(['bí đao miki', 'rich', 'sinh tố berrino ổi hồng'])
   })
 })
 
@@ -149,6 +165,57 @@ describe('BILL.md deterministic resolver', () => {
     expect(result.customer.status).toBe('ambiguous')
     expect(result.customer.candidates.map(candidate => candidate.code).sort()).toEqual(['KH004610', 'KH004611'])
     expect(result.orderDraft).toBeNull()
+  })
+
+  test('offers a same-price-list candidate for a new product and requires its reference price confirmation', () => {
+    const draftId = crypto.randomUUID()
+    const item = { lineId: 'new', rawName: 'sinh tố berrino ổi hồng', requestedQuantity: 1, requestedUnit: '' }
+    const initial = resolveBillOrder(index, {
+      draftId,
+      customerQuery: '04 Trương Định',
+      items: [item],
+    })
+
+    expect(initial.lines[0]).toMatchObject({
+      status: 'needs_product_confirmation',
+      candidates: [{ productName: 'Sinh Tố Berrino Ổi Hồng 1000ml' }],
+    })
+    const { candidateId } = initial.lines[0]!.candidates[0]!
+
+    const selected = resolveBillOrder(index, {
+      draftId,
+      customerQuery: '04 Trương Định',
+      items: [item],
+      selections: [{ lineId: 'new', candidateId }],
+    })
+    expect(selected.lines[0]).toMatchObject({
+      status: 'needs_price_confirmation',
+      matched: { productName: 'Sinh Tố Berrino Ổi Hồng 1000ml' },
+      evidence: { selectionSource: 'staff_confirmation', priceSource: 'global_reference' },
+    })
+    const priceConfirmationId = selected.lines[0]!.confirmations.find(entry => entry.kind === 'price')!.confirmationId
+
+    const confirmed = resolveBillOrder(index, {
+      draftId,
+      customerQuery: '04 Trương Định',
+      items: [item],
+      selections: [{ lineId: 'new', candidateId }],
+      confirmations: [{ lineId: 'new', confirmationId: priceConfirmationId }],
+    })
+    expect(confirmed.lines[0]).toMatchObject({
+      status: 'resolved',
+      resolved: { quantity: 1, unit: 'Đơn vị', unitPrice: 108_000, lineTotal: 108_000 },
+    })
+  })
+
+  test('does not guess a new product from an unrelated shorthand', () => {
+    const result = resolveBillOrder(index, {
+      draftId: crypto.randomUUID(),
+      customerQuery: '04 Trương Định',
+      items: [{ lineId: 'new', rawName: 'mứt ổi', requestedQuantity: 1, requestedUnit: '' }],
+    })
+
+    expect(result.lines[0]).toMatchObject({ status: 'not_found', candidates: [] })
   })
 })
 

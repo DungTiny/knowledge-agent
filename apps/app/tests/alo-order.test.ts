@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { parseBillMarkdown, resolveBillOrder } from '../server/utils/chat/bill-resolver'
+import { normalizeRequestedOrderItem, parseBillMarkdown, resolveBillOrder } from '../server/utils/chat/bill-resolver'
 
 const headers = [
   'Mã khách hàng',
@@ -123,5 +123,60 @@ describe('Alo Coffee PVang shorthand order', () => {
     expect(result.lines[19]).toMatchObject({ resolved: { unit: 'Gói 500gram', unitPrice: 135_000 } })
     expect(result.lines[28]).toMatchObject({ resolved: { unit: 'Gói', unitPrice: 65_000 } })
     expect(result.orderDraft).toMatchObject({ totalQuantity: 64, totalAmount: 4_947_000, pendingCount: 0 })
+  })
+
+  test('normalizes the dirty rawName payload produced by the chat model', () => {
+    const specs: Array<[string, number, string]> = [
+      ['3srio mãng cầu', 3, ''],
+      ['1siro đào', 1, ''],
+      ['1siro vải', 1, ''],
+      ['2siro ổi Hồng', 2, ''],
+      ['1siro chanh', 1, ''],
+      ['2chai đường đen', 2, 'chai'],
+      ['1bi đường đen', 1, 'bi'],
+      ['5hop đào túi', 5, 'hop'],
+      ['2lon đào', 2, 'lon'],
+      ['2lon vải', 2, 'lon'],
+      ['1sto vải', 1, ''],
+      ['2sto đào - Sinh Tố Berrino Vải 1000Ml', 2, ''],
+      ['1sto xoài', 1, ''],
+      ['2sto mãng cầu', 2, ''],
+      ['5ong hút to', 5, ''],
+      ['5ong hút nhỏ', 5, ''],
+      ['1thung rích lùn', 1, 'thung'],
+      ['1thung trân châu trắng', 1, 'thung'],
+      ['1bi bột kem trứng', 1, 'bi'],
+      ['1bi dừa khô vụn', 1, 'bi'],
+      ['1bi bột matcha - Bột Matcha Trà Xanh EverStyle Mũ Đỏ (500gr)', 1, 'bi'],
+      ['1bi bột màng sữa vị muối biển', 1, 'bi'],
+      ['10goi bảo anh', 10, 'goi'],
+      ['4goi bột béo trà sữa', 4, 'goi'],
+      ['1siro trái cây', 1, ''],
+      ['1puding khoai môn', 1, ''],
+      ['1siro xoài', 1, ''],
+      ['1bi bột cacao', 1, 'bi'],
+      ['1g Trà Thái Xanh Chatramue', 1, 'g'],
+      ['3 lạng Bột Gelatine Đức EWALD', 3, 'lạng'],
+    ]
+    const items = specs.map(([rawName, requestedQuantity, requestedUnit], position) => ({
+      lineId: String(position + 1), rawName, requestedQuantity, requestedUnit,
+    }))
+
+    const result = resolveBillOrder(index, {
+      draftId: crypto.randomUUID(), customerQuery: 'Alo Coffee PVang', items,
+    })
+
+    expect(result.lines.filter(line => line.status !== 'resolved').map(line => ({
+      lineId: line.lineId, rawName: line.request.rawName, status: line.status, warning: line.warning,
+    }))).toEqual([])
+    expect(result.lines).toHaveLength(30)
+    expect(result.lines[20]!.matched?.productName).toBe('Bột Matcha Trà Xanh EverStyle Mũ Đỏ')
+    expect(result.orderDraft).toMatchObject({ totalQuantity: 64, totalAmount: 4_947_000, pendingCount: 0 })
+  })
+
+  test('does not strip a compact product name that starts with a number', () => {
+    expect(normalizeRequestedOrderItem({
+      lineId: '1', rawName: '3Q Trân Châu', requestedQuantity: 3, requestedUnit: '',
+    }).rawName).toBe('3Q Trân Châu')
   })
 })

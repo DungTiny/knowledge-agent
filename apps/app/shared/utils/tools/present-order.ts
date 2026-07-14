@@ -18,23 +18,25 @@ const orderItemSchema = z.object({
   unit: z.string().describe('Catalog unit of measure (ĐVT) exactly as written in the price list, e.g. "Chai", "Hộp", "Thùng/24 Hộp"'),
   unitConfirmed: z.boolean().optional().describe('Staff confirmed 1 orderedUnit = 1 catalog unit (e.g. 1 bì = 1 Gói). Copy it verbatim from the resolver orderDraft; never set it yourself'),
   catalogPrice: z.number().optional().describe('Known catalog price retained from a previously pending unit mismatch. Copy it when revising that line so the server can restore its price after confirmation.'),
-  unitPrice: z.number().nullable().describe('Giá bán for ONE catalog unit (never per sub-unit), null if this line is not yet resolved'),
-  lineTotal: z.number().nullable().describe('quantity * unitPrice — recomputed server-side, null if not yet resolved'),
+  unitPrice: z.number().nullable().optional().describe('Giá bán for ONE catalog unit (never per sub-unit), null/omitted if this line is not yet resolved'),
+  lineTotal: z.number().nullable().optional().describe('quantity * unitPrice — recomputed server-side, null/omitted if not yet resolved'),
   note: z.string().optional().describe('Reason the line is pending (e.g. "⚠️ Cần xác nhận loại") or other remark'),
+})
+
+export const presentOrderInputSchema = z.object({
+  draftId: z.string().uuid().optional().describe('draftId returned by resolve_bill_order. Always pass it for BILL orders — the server renders the exact stored resolver draft instead of your copy'),
+  customerName: z.string().describe('Customer display name, e.g. "CF LapH - Quốc Học"'),
+  customerCode: z.string().optional().describe('Customer code (Mã khách hàng), if known'),
+  items: z.array(orderItemSchema).min(1),
+  totalQuantity: z.number().describe('Sum of quantity across ALL lines, including pending ones — recomputed server-side'),
+  totalAmount: z.number().describe('Sum of lineTotal across only the RESOLVED lines (pending lines excluded) — recomputed server-side'),
+  pendingCount: z.number().int().min(0).describe('Number of lines with unitPrice/lineTotal = null — recomputed server-side'),
 })
 
 export function createPresentOrderTool(loadStoredDraft?: LoadStoredOrderDraft) {
   return tool({
     description: 'Present a structured order/bill draft to the customer service staff for confirmation. Use this INSTEAD of a markdown table whenever you have finished resolving an order\'s line items (whether or not some lines are still pending clarification). The UI renders this as an interactive card with "Đồng ý lên bill" and "Cần thay đổi" buttons. When the order came from resolve_bill_order, ALWAYS pass its draftId: the server then renders the stored resolver draft and any names/prices/totals you type here are ignored. All prices and totals are recomputed server-side from the catalog unit price and pack-size conversion.',
-    inputSchema: z.object({
-      draftId: z.string().uuid().optional().describe('draftId returned by resolve_bill_order. Always pass it for BILL orders — the server renders the exact stored resolver draft instead of your copy'),
-      customerName: z.string().describe('Customer display name, e.g. "CF LapH - Quốc Học"'),
-      customerCode: z.string().optional().describe('Customer code (Mã khách hàng), if known'),
-      items: z.array(orderItemSchema).min(1),
-      totalQuantity: z.number().describe('Sum of quantity across ALL lines, including pending ones — recomputed server-side'),
-      totalAmount: z.number().describe('Sum of lineTotal across only the RESOLVED lines (pending lines excluded) — recomputed server-side'),
-      pendingCount: z.number().int().min(0).describe('Number of lines with unitPrice/lineTotal = null — recomputed server-side'),
-    }),
+    inputSchema: presentOrderInputSchema,
     // The model is not a trust boundary between resolve_bill_order and this card:
     // it once re-typed a 135.000đ resolver price as 150.000đ. With a draftId the
     // stored resolver draft is rendered instead of the model's copy; without one,
@@ -47,7 +49,14 @@ export function createPresentOrderTool(loadStoredDraft?: LoadStoredOrderDraft) {
         }
         return normalizeOrder(stored)
       }
-      return normalizeOrder(input)
+      return normalizeOrder({
+        ...input,
+        items: input.items.map(item => ({
+          ...item,
+          unitPrice: item.unitPrice ?? null,
+          lineTotal: item.lineTotal ?? null,
+        })),
+      })
     },
   })
 }
