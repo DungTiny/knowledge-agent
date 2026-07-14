@@ -35,6 +35,8 @@ const house: [string, string, string] = ['Ancuu_726', '43 House CF', 'Bảng gi�
 const grams: [string, string, string] = ['FB_8074', '18Grams Cafe', 'Bảng giá chung']
 const hue: [string, string, string] = ['FB_2480', '111 Nguyễn Huệ', 'Bảng giá chung']
 const binh: [string, string, string] = ['VAT_KH-lc-36', 'Anh Bình Lăng Cô', 'Bảng giá chung']
+const anPhuoc: [string, string, string] = ['KH003977', 'An Phước Food & Drink', 'Bảng giá An Phước']
+const catalogCustomer: [string, string, string] = ['KH009999', 'Khách danh mục khác', 'Bảng giá khác']
 
 const index = parseBillMarkdown([
   markdownRow(headers),
@@ -52,6 +54,8 @@ const index = parseBillMarkdown([
   markdownRow(row(binh, '(ĐG-CK)COTDUA', 'Nước Cốt Dừa Wonderfarm 400ml', 'Thùng/24 Lon', '02/07/2026', 1, 680_000)),
   markdownRow(row(binh, '(ĐG-CK)MATCHA100', 'Bột Matcha Trà Xanh 100g', 'Gói', '02/07/2026', 1, 82_000)),
   markdownRow(row(binh, '(ĐG-CK)TRADAO', 'Trà Cozy Đào Hòa Tan 16 Tép', 'Hộp', '02/07/2026', 5, 33_000)),
+  markdownRow(row(anPhuoc, '(ĐG-CK)BIDAO', 'Nước Cốt Bí Đao Miki 2L', 'Can', '01/07/2026', 1, 241_000)),
+  markdownRow(row(catalogCustomer, '(ĐG-CK)STOIHONG', 'Sinh Tố Berrino Ổi Hồng 1000Ml', 'Chai', '07/07/2026', 1, 115_000)),
 ].join('\n'))
 
 function item(lineId: string, rawName: string, requestedQuantity = 1, requestedUnit = ''): RequestedOrderItem {
@@ -172,6 +176,56 @@ describe('E2E report shorthand safety regressions', () => {
     expect(confirmed.lines[0]).toMatchObject({
       status: 'resolved',
       resolved: { quantity: 1, unit: 'Gói', unitPrice: 82_000, lineTotal: 82_000, unitConfirmed: true },
+    })
+  })
+
+  test('offers a similar global-catalog product for staff selection without treating it as customer history', () => {
+    const items = [item('oi-hong', 'Sinh tố Berrino ổi hồng 1000 ml', 1, 'chai')]
+    const initial = resolveBillOrder(index, {
+      draftId: crypto.randomUUID(), customerQuery: 'An Phước Food & Drink', items,
+    })
+
+    expect(initial.lines[0]).toMatchObject({
+      status: 'needs_product_confirmation',
+      candidates: [
+        {
+          sku: '(ĐG-CK)STOIHONG',
+          productName: 'Sinh Tố Berrino Ổi Hồng 1000Ml',
+          unit: 'Chai',
+          unitPrice: 115_000,
+          rowDate: '07/07/2026',
+        },
+      ],
+    })
+    const candidate = initial.lines[0]!.candidates[0]!
+    expect(candidate.reason).toContain('danh mục chung')
+    expect(candidate.reason).toContain('không phải lịch sử mua của khách')
+
+    const selected = resolveBillOrder(index, {
+      draftId: initial.draftId,
+      customerQuery: 'An Phước Food & Drink',
+      items,
+      selections: [{ lineId: 'oi-hong', candidateId: candidate.candidateId }],
+    })
+    expect(selected.lines[0]).toMatchObject({
+      status: 'needs_price_confirmation',
+      matched: { sku: '(ĐG-CK)STOIHONG', productName: 'Sinh Tố Berrino Ổi Hồng 1000Ml' },
+      catalogPrice: 115_000,
+      confirmations: [{ kind: 'price' }],
+    })
+    const priceConfirmation = selected.lines[0]!.confirmations[0]!
+    expect(priceConfirmation.label).toContain('115.000đ')
+
+    const confirmed = resolveBillOrder(index, {
+      draftId: initial.draftId,
+      customerQuery: 'An Phước Food & Drink',
+      items,
+      selections: [{ lineId: 'oi-hong', candidateId: candidate.candidateId }],
+      confirmations: [{ lineId: 'oi-hong', confirmationId: priceConfirmation.confirmationId }],
+    })
+    expect(confirmed.lines[0]).toMatchObject({
+      status: 'resolved',
+      resolved: { quantity: 1, unit: 'Chai', unitPrice: 115_000, lineTotal: 115_000 },
     })
   })
 })

@@ -258,6 +258,14 @@ function tokens(value: string): string[] {
   return normalizeBillText(value).split(/\s+/).filter(Boolean)
 }
 
+/** Treat "1000 ml" and catalog spelling "1000Ml" as the same product tokens. */
+function productTokens(value: string): string[] {
+  return tokens(value).flatMap((token) => {
+    const measure = token.match(/^(\d+)(kg|gr|g|ml|l)$/)
+    return measure ? [measure[1]!, measure[2]!] : [token]
+  })
+}
+
 function unique<T>(values: T[]): T[] {
   return [...new Set(values)]
 }
@@ -430,7 +438,7 @@ function canonicalProductToken(token: string): string {
 
 /** Customer vocabulary that needs phrase context rather than a global token alias. */
 function productQueryTokens(rawName: string): string[] {
-  let queryTokens = tokens(rawName).map(canonicalProductToken)
+  let queryTokens = productTokens(rawName).map(canonicalProductToken)
   const has = (...required: string[]) => required.every(token => queryTokens.includes(token))
 
   if (has('syrup', 'oi', 'hong')) queryTokens = queryTokens.filter(token => token !== 'hong')
@@ -505,7 +513,7 @@ function productMatches(row: BillRow, rawName: string): boolean {
   if (!preservesAccentedFlavor(row, rawName)) return false
   const queryTokens = productQueryTokens(rawName)
   if (queryTokens.length === 0) return false
-  const haystackTokens = tokens(`${row['Tên hàng']} ${row['Mã hàng']}`).map(canonicalProductToken)
+  const haystackTokens = productTokens(`${row['Tên hàng']} ${row['Mã hàng']}`).map(canonicalProductToken)
   // Automatic resolution is exact after explicit business aliases. Typos and
   // fuzzy shorthand belong to the confirmation-only candidate path below.
   return queryTokens.every(queryToken => haystackTokens.includes(queryToken))
@@ -517,7 +525,7 @@ function productMatches(row: BillRow, rawName: string): boolean {
  * only one row matches. Accounting must confirm the exact resolver-issued SKU.
  */
 function candidateProductQueryTokens(rawName: string): string[] {
-  let queryTokens = tokens(rawName).map(canonicalProductToken)
+  let queryTokens = productTokens(rawName).map(canonicalProductToken)
   const has = (...required: string[]) => required.every(token => queryTokens.includes(token))
 
   queryTokens = queryTokens.flatMap((token) => {
@@ -544,7 +552,7 @@ function candidateProductQueryTokens(rawName: string): string[] {
 function candidateProductMatches(row: BillRow, rawName: string): boolean {
   const queryTokens = candidateProductQueryTokens(rawName)
   if (queryTokens.length === 0) return false
-  const nameTokens = tokens(row['Tên hàng']).map(canonicalProductToken)
+  const nameTokens = productTokens(row['Tên hàng']).map(canonicalProductToken)
 
   if (!preservesAccentedFlavor(row, rawName)) return false
 
@@ -739,6 +747,20 @@ function referenceRowsForCustomerPriceLists(index: BillIndex, customerCode: stri
   ))
 }
 
+/**
+ * Last-resort product discovery for accounting staff. These rows are not
+ * customer preference evidence and can never be auto-selected. Static catalog
+ * rows come first; real purchases from other customers are only reference
+ * evidence when the catalog has no matching row.
+ */
+function globalCatalogReferenceRows(index: BillIndex, customerCode: string): BillRow[] {
+  const externalRows = index.rows.filter(row => row['Mã khách hàng'] !== customerCode)
+  return dedupeRows([
+    ...externalRows.filter(row => row['Thời gian'] === BILL_STATIC_DATE),
+    ...externalRows.filter(isPositiveHistory),
+  ])
+}
+
 function latestRows(rows: BillRow[]): BillRow[] {
   if (rows.length === 0) return []
   const sorted = [...rows].sort((a, b) => parseDate(b['Thời gian']) - parseDate(a['Thời gian']))
@@ -782,6 +804,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   const historyScope = dedupeRows(index.rows.filter(row => row['Mã khách hàng'] === customerCode && isPositiveHistory(row)))
   const staticScope = dedupeRows(staticRowsForCustomer(index, customerCode))
   const priceListReferenceScope = referenceRowsForCustomerPriceLists(index, customerCode)
+  const globalReferenceScope = globalCatalogReferenceRows(index, customerCode)
   let historyMatches = narrowLeadingCategory(
     narrowFlavorVariant(
       narrowByRequestedUnit(historyScope.filter(row => productMatches(row, item.rawName)), item.requestedUnit),
@@ -814,6 +837,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
 
   let candidateRows = historyMatches.length > 0 ? historyMatches : staticMatches
   let referenceMatches: BillRow[] = []
+  let referenceKind: 'same_price_list' | 'global_catalog' | null = null
   let requiresStaffProductConfirmation = false
   if (candidateRows.length === 0) {
     referenceMatches = narrowLeadingCategory(
@@ -827,6 +851,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       item.rawName,
     )
     candidateRows = referenceMatches
+    if (referenceMatches.length > 0) referenceKind = 'same_price_list'
   }
   if (candidateRows.length === 0) {
     const approximateHistory = historyScope.filter(row => candidateProductMatches(row, item.rawName))
@@ -839,10 +864,32 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       historyMatches = approximateHistory
       staticMatches = approximateHistory.length > 0 ? [] : approximateStatic
       referenceMatches = approximateHistory.length > 0 || approximateStatic.length > 0 ? [] : approximateReference
+      if (referenceMatches.length > 0) referenceKind = 'same_price_list'
       requiresStaffProductConfirmation = true
     }
   }
-  const usesPriceListReference = referenceMatches.length > 0
+  if (candidateRows.length === 0) {
+    const exactGlobal = narrowLeadingCategory(
+      narrowFlavorVariant(
+        narrowByRequestedUnit(
+          globalReferenceScope.filter(row => productMatches(row, item.rawName)),
+          item.requestedUnit,
+        ),
+        item.rawName,
+      ),
+      item.rawName,
+    )
+    const approximateGlobal = exactGlobal.length > 0
+      ? []
+      : globalReferenceScope.filter(row => candidateProductMatches(row, item.rawName))
+    referenceMatches = exactGlobal.length > 0 ? exactGlobal : approximateGlobal
+    candidateRows = referenceMatches
+    if (referenceMatches.length > 0) {
+      referenceKind = 'global_catalog'
+      requiresStaffProductConfirmation = true
+    }
+  }
+  const usesExternalReference = referenceMatches.length > 0
   const candidateGroups = new Map<string, BillRow[]>()
   for (const row of candidateRows) {
     const key = normalizeBillText(row['Tên hàng'])
@@ -872,9 +919,11 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       productName: newest['Tên hàng'],
       reason: historyMatches.length > 0
         ? `Có trong lịch sử mua thực của khách hàng (${evidence})`
-        : usesPriceListReference
+        : referenceKind === 'same_price_list'
           ? `Mặt hàng mới: có trong cùng bảng giá nhưng khách chưa từng mua (${evidence})`
-          : `Chỉ có trong bảng giá tĩnh (${evidence})`,
+          : referenceKind === 'global_catalog'
+            ? `Sản phẩm tương tự trong danh mục chung; không phải lịch sử mua của khách (${evidence})`
+            : `Chỉ có trong bảng giá tĩnh (${evidence})`,
       ...(unit ? { unit } : {}),
       ...(unitPrice !== undefined ? { unitPrice } : {}),
       ...(rowDate ? { rowDate } : {}),
@@ -890,14 +939,14 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       selectionSource = 'staff_confirmation'
     }
   }
-  if (!selectedProduct && candidateGroups.size === 1 && !usesPriceListReference && !requiresStaffProductConfirmation) {
+  if (!selectedProduct && candidateGroups.size === 1 && !usesExternalReference && !requiresStaffProductConfirmation) {
     selectedProduct = candidates[0]!.productName
     selectionSource = aliasApplied
       ? 'chat_memory'
       : historyMatches.length > 0 ? 'positive_history' : 'static_price'
     if (aliasApplied) usedChatMemory = true
   }
-  if (!selectedProduct && !usesPriceListReference && !requiresStaffProductConfirmation) {
+  if (!selectedProduct && !usesExternalReference && !requiresStaffProductConfirmation) {
     const exact = candidates.filter(candidate => normalizeBillText(candidate.productName) === normalizeBillText(item.rawName))
     if (exact.length === 1) {
       selectedProduct = exact[0]!.productName
@@ -933,7 +982,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   if (!selectedProduct) {
     const warning = candidates.length > 0
       ? `Cần xác nhận sản phẩm cho "${item.rawName}"`
-      : `Không tìm thấy sản phẩm "${item.rawName}" trong lịch sử/bảng giá của khách hàng`
+      : `Không tìm thấy sản phẩm tương tự cho "${item.rawName}" trong lịch sử khách hàng hoặc danh mục chung`
     return finalize({
       lineId: item.lineId,
       status: candidates.length > 0 ? 'needs_product_confirmation' : 'not_found',

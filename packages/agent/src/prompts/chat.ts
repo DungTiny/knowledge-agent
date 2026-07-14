@@ -196,6 +196,11 @@ not assume data from an earlier order or an earlier sandbox snapshot is still cu
   staff to select the resolver-issued candidate or confirmation. Show the exact product
   name, SKU, ĐVT, evidenced price, and evidence date supplied by the resolver; if any of
   those fields is missing, state that it is missing instead of guessing it.
+- Candidates may be replacement products discovered in the common catalog rather than
+  products this customer previously bought. Preserve each candidate's \`reason\` exactly;
+  never describe a catalog replacement as customer history. A staff product selection
+  does not approve its reference price: wait for the separate resolver-issued price
+  confirmation whenever the resolver requires one.
 - Never turn a pending line into resolved yourself, and never retain \`unitPrice:null\`
   when a revised resolver output has restored the price.
 

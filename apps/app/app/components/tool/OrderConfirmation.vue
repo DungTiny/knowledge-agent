@@ -126,7 +126,7 @@ function confirmResolution(item: OrderLineItem, confirmation: NonNullable<OrderL
               <td colspan="3" class="px-3 pb-3">
                 <div v-if="item.candidates?.length" class="space-y-2">
                   <p class="text-xs font-medium text-highlighted">
-                    Kế toán chọn đúng sản phẩm từ lịch sử:
+                    Kế toán chọn sản phẩm phù hợp:
                   </p>
                   <UButton
                     v-for="candidate in item.candidates"
@@ -144,6 +144,9 @@ function confirmResolution(item: OrderLineItem, confirmation: NonNullable<OrderL
                         ĐVT {{ candidate.unit || 'chưa rõ' }} ·
                         {{ candidate.unitPrice != null ? formatVnd(candidate.unitPrice) : 'giá chưa rõ' }} ·
                         {{ candidate.rowDate || 'chưa rõ ngày' }}
+                      </span>
+                      <span class="block text-muted">
+                        {{ candidate.reason }}
                       </span>
                     </span>
                   </UButton>
