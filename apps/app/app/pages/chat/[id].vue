@@ -9,6 +9,7 @@ import ProseStreamPre from '../../components/prose/PreStream.vue'
 import type { ToolCall } from '#shared/types/tool-call'
 import type { GetChatResponse } from '#shared/types/chat'
 import type { PresentOrderUIToolInvocation } from '#shared/utils/tools/present-order'
+import type { ResolveBillOrderUIToolInvocation } from '#shared/types/order-resolution'
 
 definePageMeta({ auth: 'user' })
 
@@ -261,7 +262,14 @@ function getMessageToolCalls(message: UIMessage): ToolCall[] {
 // Filter out intermediate "thinking out loud" text between tool calls.
 // Only keeps text parts that appear after the last tool call (the actual response).
 function getContentParts(message: UIMessage) {
-  const isRenderedTool = (type: string) => type === 'tool-chart' || type === 'tool-present_order'
+  const isRenderedTool = (type: string) => type === 'tool-chart' || type === 'tool-present_order' || type === 'tool-resolve_bill_order'
+  const hasStructuredOrder = message.parts.some((part) => {
+    const candidate = part as { type?: string, output?: { orderDraft?: unknown } }
+    return candidate.type === 'tool-present_order'
+      || (candidate.type === 'tool-resolve_bill_order'
+        && candidate.output?.orderDraft !== null
+        && candidate.output?.orderDraft !== undefined)
+  })
   let lastToolIdx = -1
   for (let i = message.parts.length - 1; i >= 0; i--) {
     const { type } = message.parts[i] as { type: string }
@@ -274,9 +282,14 @@ function getContentParts(message: UIMessage) {
     const { type } = p as { type: string }
     if (type === 'data-sources' || type === 'data-tool-call') return false
     if (type.startsWith('tool-') && !isRenderedTool(type)) return false
+    if (type === 'text' && message.role === 'assistant' && hasStructuredOrder) return false
     if (type === 'text' && message.role === 'assistant' && i <= lastToolIdx) return false
     return true
   })
+}
+
+function hasPresentedOrder(message: UIMessage): boolean {
+  return message.parts.some(part => (part as { type?: string }).type === 'tool-present_order')
 }
 
 function handleOrderConfirmed(message: unknown) {
@@ -286,6 +299,11 @@ function handleOrderConfirmed(message: unknown) {
 function handleOrderChangeRequested() {
   if (chat.status !== 'ready') return
   chat.sendMessage({ text: 'Tôi cần thay đổi đơn hàng này.' })
+}
+
+function handleResolutionRequested(message: string) {
+  if (chat.status !== 'ready') return
+  chat.sendMessage({ text: message })
 }
 
 const chatMessagesRef = ref<InstanceType<typeof import('#components').UChatMessages>>()
@@ -418,6 +436,17 @@ watch(() => chat.status, (newStatus, oldStatus) => {
                 :busy="chat.status === 'streaming' || chat.status === 'submitted'"
                 @confirmed="handleOrderConfirmed"
                 @change-requested="handleOrderChangeRequested"
+                @resolution-requested="handleResolutionRequested"
+              />
+              <ToolResolverOrderResult
+                v-else-if="part.type === 'tool-resolve_bill_order'"
+                :invocation="(part as ResolveBillOrderUIToolInvocation)"
+                :message-id="message.id"
+                :busy="chat.status === 'streaming' || chat.status === 'submitted'"
+                :hide-order="hasPresentedOrder(message)"
+                @confirmed="handleOrderConfirmed"
+                @change-requested="handleOrderChangeRequested"
+                @resolution-requested="handleResolutionRequested"
               />
               <template v-else-if="part.type === 'file'">
                 <FileCard

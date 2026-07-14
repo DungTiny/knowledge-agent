@@ -1,7 +1,7 @@
 import { kv } from '@nuxthub/kv'
 import { KV_KEYS } from './sandbox/types'
 
-const DAILY_MESSAGE_LIMIT = 15
+const DAILY_MESSAGE_LIMIT = 1000000
 
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10)

@@ -160,6 +160,26 @@ describe('unitsEquivalent', () => {
     expect(unitsEquivalent('hộp', 'gói')).toBe(false)
     expect(unitsEquivalent('chai', 'lon')).toBe(false)
   })
+
+  test('normalizes unaccented customer units and the confirmed bì = gói shorthand', () => {
+    expect(unitsEquivalent('thung', 'Thùng')).toBe(true)
+    expect(unitsEquivalent('bi', 'Gói')).toBe(true)
+    expect(unitsEquivalent('bịch', 'Túi')).toBe(true)
+  })
+})
+
+describe('resolveOrderLine — compact order units', () => {
+  test('treats 1g as one Gói only for the single-item shorthand', () => {
+    expect(resolveOrderLine({ catalogUnit: 'Gói', catalogPrice: 65_000, requestedQuantity: 1, requestedUnit: 'g' }))
+      .toMatchObject({ ok: true, quantity: 1, unit: 'Gói', lineTotal: 65_000 })
+    expect(resolveOrderLine({ catalogUnit: 'Gói', catalogPrice: 65_000, requestedQuantity: 500, requestedUnit: 'g' }).ok)
+      .toBe(false)
+  })
+
+  test('treats a requested bì as one catalog pack stored only as 500gr', () => {
+    expect(resolveOrderLine({ catalogUnit: '500gr', catalogPrice: 365_000, requestedQuantity: 1, requestedUnit: 'bì' }))
+      .toMatchObject({ ok: true, quantity: 1, unit: '500gr', lineTotal: 365_000 })
+  })
 })
 
 describe('parseSizedUnit', () => {
@@ -507,11 +527,11 @@ describe('normalizeOrder', () => {
 })
 
 describe('resolveOrderLine — mismatch reason', () => {
-  // The bug: a unit the catalog does not know ("bì" for a "Gói" product) was
+  // The bug: a unit the catalog does not know ("bao" for a "Gói" product) was
   // indistinguishable from a fractional-pack failure, so the caller could not
   // offer staff a 1:1 mapping without also mis-billing pack fractions.
   test('an unknown requested unit reports reason "unit_mismatch"', () => {
-    const result = resolveOrderLine({ catalogUnit: 'Gói', catalogPrice: 45_000, requestedQuantity: 1, requestedUnit: 'bì' })
+    const result = resolveOrderLine({ catalogUnit: 'Gói', catalogPrice: 45_000, requestedQuantity: 1, requestedUnit: 'bao' })
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toBe('unit_mismatch')
   })

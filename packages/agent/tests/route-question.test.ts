@@ -48,6 +48,32 @@ Trà lài 1kg`
     })
   })
 
+  test('routes the Anh Công Đức shorthand order as a large order', () => {
+    const question = `Anh Công Đức FB
+1 thùng bột béo
+1 thùng sữa tươi
+10kg đường
+1 bột kem trứng brulee
+1 hộp rau câu
+1 sinh tố đào
+5 rich
+1 base
+1 bột mole dưa lưới
+5 trân châu đen
+1 siro dâu dingfong
+1 siro vải dinhfong
+1 siro mảng cầu đậm đặc
+1 siro chanh dây đậm đặc
+1 siro thơm đậm đặc
+1 cái vợt múc trân châu`
+
+    expect(applyRoutingGuardrails(question, simpleConfig)).toMatchObject({
+      complexity: 'complex',
+      maxSteps: 25,
+      reasoning: expect.stringContaining(ORDER_WORKFLOW_REASON_PREFIX),
+    })
+  })
+
   test('does not modify an ordinary lookup', () => {
     expect(applyRoutingGuardrails('Richs là sản phẩm gì?', simpleConfig)).toEqual(simpleConfig)
   })

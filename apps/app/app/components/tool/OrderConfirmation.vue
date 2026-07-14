@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { PresentOrderUIToolInvocation } from '#shared/utils/tools/present-order'
+import type { OrderLineItem } from '#shared/utils/uom'
 
 const props = defineProps<{
   invocation: PresentOrderUIToolInvocation
@@ -11,6 +12,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   confirmed: [message: unknown]
   changeRequested: []
+  resolutionRequested: [message: string]
 }>()
 
 const toast = useToast()
@@ -49,6 +51,14 @@ async function onConfirm() {
 function onChangeRequested() {
   emit('changeRequested')
 }
+
+function selectCandidate(item: OrderLineItem, candidate: NonNullable<OrderLineItem['candidates']>[number]) {
+  emit('resolutionRequested', `Tôi xác nhận dòng ${item.lineId}: chọn ${candidate.productName} (${candidate.sku}), candidateId: ${candidate.candidateId}.`)
+}
+
+function confirmResolution(item: OrderLineItem, confirmation: NonNullable<OrderLineItem['confirmations']>[number]) {
+  emit('resolutionRequested', `Tôi xác nhận dòng ${item.lineId}: ${confirmation.label}, confirmationId: ${confirmation.confirmationId}.`)
+}
 </script>
 
 <template>
@@ -61,6 +71,9 @@ function onChangeRequested() {
           <span v-if="invocation.output.customerCode" class="text-muted font-normal">({{ invocation.output.customerCode }})</span>
         </h3>
       </div>
+      <p v-if="invocation.output.customerNote" class="mt-1 text-xs text-muted">
+        {{ invocation.output.customerNote }}
+      </p>
     </div>
 
     <div class="overflow-x-auto">
@@ -106,6 +119,57 @@ function onChangeRequested() {
               <td />
               <td colspan="3" class="px-3 pb-2 -mt-1 text-xs text-error">
                 {{ item.note }}
+              </td>
+            </tr>
+            <tr v-if="item.candidates?.length || item.confirmations?.length" class="border-b border-default last:border-b-0">
+              <td />
+              <td colspan="3" class="px-3 pb-3">
+                <div v-if="item.candidates?.length" class="space-y-2">
+                  <p class="text-xs font-medium text-highlighted">
+                    Kế toán chọn sản phẩm phù hợp:
+                  </p>
+                  <UButton
+                    v-for="candidate in item.candidates"
+                    :key="candidate.candidateId"
+                    color="neutral"
+                    variant="soft"
+                    size="xs"
+                    class="w-full justify-start h-auto py-2"
+                    :disabled="busy"
+                    @click="selectCandidate(item, candidate)"
+                  >
+                    <span class="text-left whitespace-normal">
+                      <span class="block font-medium">{{ candidate.productName }} ({{ candidate.sku }})</span>
+                      <span class="block text-muted">
+                        ĐVT {{ candidate.unit || 'chưa rõ' }} ·
+                        {{ candidate.unitPrice != null ? formatVnd(candidate.unitPrice) : 'giá chưa rõ' }} ·
+                        {{ candidate.rowDate || 'chưa rõ ngày' }}
+                      </span>
+                      <span class="block text-muted">
+                        {{ candidate.reason }}
+                      </span>
+                    </span>
+                  </UButton>
+                </div>
+                <div v-if="item.confirmations?.length" class="mt-2 space-y-2">
+                  <p class="text-xs font-medium text-highlighted">
+                    Kế toán xác nhận ĐVT/giá:
+                  </p>
+                  <UButton
+                    v-for="confirmation in item.confirmations"
+                    :key="confirmation.confirmationId"
+                    :label="confirmation.label"
+                    color="warning"
+                    variant="soft"
+                    size="xs"
+                    class="w-full justify-start"
+                    :disabled="busy"
+                    @click="confirmResolution(item, confirmation)"
+                  />
+                  <p v-for="confirmation in item.confirmations" :key="`${confirmation.confirmationId}-reason`" class="text-xs text-muted">
+                    {{ confirmation.reason }}
+                  </p>
+                </div>
               </td>
             </tr>
           </template>

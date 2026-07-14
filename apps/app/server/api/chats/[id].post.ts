@@ -14,11 +14,11 @@ import { getModelProviderConfig, isModelProviderConfigured } from '../../utils/m
 import { KV_KEYS } from '../../utils/sandbox/types'
 import { adminTools } from '../../utils/chat/admin-tools'
 import { parseOrderLookupRequest } from '../../utils/chat/order-context'
-import { createResolveBillOrderTool } from '../../utils/chat/resolve-bill-order-tool'
+import { createResolveBillOrderTool, loadStoredOrderDraft } from '../../utils/chat/resolve-bill-order-tool'
 import { loadBillFromSandbox } from '../../utils/chat/bill-source'
 import { checkRateLimit, incrementRateLimit } from '../../utils/rate-limit'
 import { CUSTOM_MODEL_ID } from '#shared/utils/model-provider'
-import { presentOrderTool } from '#shared/utils/tools/present-order'
+import { createPresentOrderTool } from '#shared/utils/tools/present-order'
 import { resolveOrderLineTool } from '#shared/utils/tools/resolve-order-line'
 
 defineRouteMeta({
@@ -147,7 +147,7 @@ export default defineEventHandler(async (event) => {
         tools: {
           ...savoir.tools,
           resolve_bill_order: resolveBillOrderTool,
-          present_order: presentOrderTool,
+          present_order: createPresentOrderTool(draftId => loadStoredOrderDraft(id as string, draftId)),
           resolve_order_line: resolveOrderLineTool,
         },
         getAgentConfig,

@@ -1,15 +1,15 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import { kv } from '@nuxthub/kv'
-import { parseBillMarkdown, resolveBillOrder } from './bill-resolver'
-import type { BillIndex, BillOrderConfirmation, BillOrderSelection, RequestedOrderItem } from './bill-resolver'
+import { collectChatMemory, emptyChatOrderMemory, normalizeRequestedOrderItem, parseBillMarkdown, resolveBillOrder } from './bill-resolver'
+import type { BillIndex, BillOrderConfirmation, BillOrderSelection, ChatOrderMemory, RequestedOrderItem, ResolvedOrderDraft } from './bill-resolver'
 import type { SandboxBillSource } from './bill-source'
 
 const requestedItemSchema = z.object({
   lineId: z.string().min(1),
   rawName: z.string().min(1),
   requestedQuantity: z.number().positive(),
-  requestedUnit: z.string().min(1),
+  requestedUnit: z.string().default('').describe('Unit exactly as written by the customer. Use an empty string when the customer did not state a unit; never infer one.'),
 })
 
 const selectionSchema = z.object({
@@ -34,11 +34,32 @@ const inputSchema = z.object({
   }
 })
 
+export const resolveBillOrderInputSchema = inputSchema
+
 interface StoredBillDraft {
   customerQuery: string
   items: RequestedOrderItem[]
   selections: BillOrderSelection[]
   confirmations: BillOrderConfirmation[]
+  // The resolver's latest output for this draft. present_order renders this
+  // instead of the model's re-typed copy — the model is not a trust boundary.
+  orderDraft?: ResolvedOrderDraft | null
+}
+
+function draftKey(chatId: string, draftId: string): string {
+  return `order:draft:${chatId}:${draftId}`
+}
+
+// Chat-scoped confirmation memory (ADR 0001): lives exactly as long as the
+// chat, never shared across chats.
+function chatMemoryKey(chatId: string): string {
+  return `order:chatmem:${chatId}`
+}
+
+/** The resolver draft stored for a draftId, for present_order; null when unknown. */
+export async function loadStoredOrderDraft(chatId: string, draftId: string): Promise<ResolvedOrderDraft | null> {
+  const stored = await kv.get<StoredBillDraft>(draftKey(chatId, draftId))
+  return stored?.orderDraft ?? null
 }
 
 function mergeByKey<T>(current: T[], incoming: T[], key: (value: T) => string): T[] {
@@ -47,25 +68,39 @@ function mergeByKey<T>(current: T[], incoming: T[], key: (value: T) => string): 
   return [...merged.values()]
 }
 
+/** A revision may contain only renamed/changed lines; keep the rest of the draft. */
+export function mergeRequestedOrderItems(
+  current: RequestedOrderItem[],
+  incoming: RequestedOrderItem[],
+): RequestedOrderItem[] {
+  return mergeByKey(current, incoming.map(normalizeRequestedOrderItem), value => value.lineId)
+}
+
 export function createResolveBillOrderTool(
   chatId: string,
   loadBillSource: () => Promise<SandboxBillSource>,
 ) {
   return tool({
-    description: `Resolve a complete Mộc Trà order deterministically from the current BILL.md in the synced sandbox snapshot. Use exactly once for a new itemized order and once for each revision. This tool resolves the customer, customer-scoped product variants, latest valid prices, ĐVT conversions, warnings, totals, and returns an orderDraft for present_order. Never use bash/web search or calculate order lines yourself when this tool is available.`,
+    description: `Resolve a complete Mộc Trà order deterministically from the current BILL.md in the synced sandbox snapshot. Use exactly once for a new itemized order and once for each revision. This tool resolves the customer, customer-scoped product variants, latest valid prices, ĐVT conversions, warnings, totals, and returns an orderDraft for present_order. When the customer's history and price list have no match, it may return similar products from the common catalog as accounting-only replacement choices; these are never customer preference evidence. A fuzzy shorthand match or even one candidate remains pending until accounting staff selects the exact resolver-issued candidate/confirmation with its product, SKU, ĐVT, evidenced price, and evidence date. Product selection never implicitly approves a global reference price. Never infer a product or price, and never use bash/web search or calculate order lines yourself when this tool is available.`,
     inputSchema,
     execute: async (input) => {
       const start = Date.now()
       const draftId = input.draftId ?? crypto.randomUUID()
-      const key = `order:draft:${chatId}:${draftId}`
+      const key = draftKey(chatId, draftId)
       const stored = input.draftId ? await kv.get<StoredBillDraft>(key) : null
       if (input.draftId && !stored) {
         throw new Error(`Order draft not found or expired: ${input.draftId}`)
       }
 
+      const incomingItems = input.items
+        ? (input.items as RequestedOrderItem[]).map(normalizeRequestedOrderItem)
+        : null
+
       const state: StoredBillDraft = {
         customerQuery: input.customerQuery ?? stored!.customerQuery,
-        items: (input.items ?? stored!.items) as RequestedOrderItem[],
+        items: incomingItems
+          ? stored ? mergeRequestedOrderItems(stored.items, incomingItems) : incomingItems
+          : stored!.items,
         selections: mergeByKey(
           stored?.selections ?? [],
           input.selections as BillOrderSelection[],
@@ -82,11 +117,20 @@ export function createResolveBillOrderTool(
       // on every tool execution instead of caching build-time or warm-instance data.
       const billSource = await loadBillSource()
       const billIndex: BillIndex = parseBillMarkdown(billSource.content)
+      const chatMemory = await kv.get<ChatOrderMemory>(chatMemoryKey(chatId)) ?? emptyChatOrderMemory()
       const output = resolveBillOrder(billIndex, {
         draftId,
         ...state,
+        chatMemory,
       })
-      await kv.set(key, state)
+      await kv.set(key, { ...state, orderDraft: output.orderDraft })
+      await kv.set(chatMemoryKey(chatId), collectChatMemory({
+        memory: chatMemory,
+        previousQuery: stored?.customerQuery,
+        previousItems: stored?.items,
+        request: state,
+        output,
+      }))
 
       const summary = output.customer.status !== 'resolved'
         ? `Customer ${output.customer.status}; ${output.customer.candidates.length} candidate(s)`
