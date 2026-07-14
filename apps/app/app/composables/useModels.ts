@@ -47,8 +47,7 @@ export function useModels() {
     if (!v) return
     if (!v.available && model.value === CUSTOM_MODEL_ID) {
       model.value = 'anthropic/claude-sonnet-4.6'
-    }
-    else if (v.available && CUSTOM_ONLY && model.value !== CUSTOM_MODEL_ID) {
+    } else if (v.available && CUSTOM_ONLY && model.value !== CUSTOM_MODEL_ID) {
       // coerce stale cookies (e.g. previously selected base model) to custom
       model.value = CUSTOM_MODEL_ID
     }
