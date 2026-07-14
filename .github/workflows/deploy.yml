@@ -36,6 +36,8 @@ jobs:
 
       - name: Build project
         run: bun run build
+        env:
+          BETTER_AUTH_SECRET: placeholder_secret_for_ci_build_only
 
   deploy:
     name: Deploy to VPS
