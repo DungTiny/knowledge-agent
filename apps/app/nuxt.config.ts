@@ -109,7 +109,8 @@ export default defineNuxtConfig({
   hub: {
     db: {
       dialect: 'postgresql',
-      applyMigrationsDuringBuild: false
+      applyMigrationsDuringBuild: false,
+      migrationsDirs: ['server/db/migrations/postgresql']
     },
     kv: true,
     blob: true,
@@ -150,6 +151,7 @@ export default defineNuxtConfig({
         botTrigger: '',
       },
       discordBotUrl: '',
+      siteUrl: process.env.NUXT_PUBLIC_SITE_URL || '',
     },
   }
 })
