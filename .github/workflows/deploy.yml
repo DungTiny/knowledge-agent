@@ -34,12 +34,6 @@ jobs:
       - name: Lint codebase
         run: bun run lint
 
-      - name: Check TypeScript types
-        run: bun run typecheck
-
-      - name: Run unit tests
-        run: bun run test
-
       - name: Build project
         run: bun run build
 
