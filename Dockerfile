@@ -32,6 +32,7 @@ COPY . .
 # Set build-time environment variables
 ENV NODE_ENV=production
 ENV NODE_OPTIONS="--max-old-space-size=4096"
+ENV BETTER_AUTH_SECRET=placeholder_secret_for_build_only
 
 # Build the project using Node.js/Turbo (which respects NODE_OPTIONS heap memory limits)
 RUN npx turbo run build

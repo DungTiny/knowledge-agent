@@ -88,8 +88,7 @@ function onGitHub() {
 <template>
   <div class="flex min-h-dvh bg-default">
     <div class="w-full lg:w-1/2 flex items-center justify-center p-8 relative">
-      <div class="absolute top-4 right-4 flex items-center gap-1">
-      </div>
+      <div class="absolute top-4 right-4 flex items-center gap-1" />
 
       <div class="w-full max-w-sm">
         <div class="text-center mb-8">

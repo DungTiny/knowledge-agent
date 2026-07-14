@@ -87,7 +87,6 @@ onMounted(() => {
     <!-- Fixed navbar -->
     <header class="shrink-0 z-20 bg-default border-b border-default">
       <div class="max-w-5xl mx-auto flex items-center justify-between px-4 h-12">
-
         <div v-if="data?.title" class="hidden sm:flex items-center gap-2 text-sm text-muted truncate max-w-sm">
           <UAvatar
             v-if="data.author?.image"

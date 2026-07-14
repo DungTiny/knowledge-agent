@@ -384,9 +384,7 @@ export async function syncFileSource(
       try {
         const filepath = `${targetDir}/${entry.filename}`
 
-        await sandbox.writeFiles([
-          { path: filepath, content: Buffer.from(entry.content, 'utf-8') },
-        ])
+        await sandbox.writeFiles([{ path: filepath, content: Buffer.from(entry.content, 'utf-8') }])
 
         fileCount++
       } catch (error) {
