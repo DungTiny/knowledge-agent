@@ -36,7 +36,14 @@ export function parsePackSpec(unit: string | null | undefined): PackSpec | null 
 }
 
 export function normalizeUnit(unit: string): string {
-  return unit.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim()
+  return unit
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 /**
@@ -45,9 +52,10 @@ export function normalizeUnit(unit: string): string {
  * Confirmed with the business — extend deliberately, a wrong pair mis-bills.
  */
 const UNIT_SYNONYMS: string[][] = [
-  ['hộp', 'lon', 'hũ'],
-  ['gói', 'túi'],
-  ['chai', 'lọ'],
+  ['hop', 'lon', 'hu'],
+  // Staff/customer shorthand "bì/bi" means one bag in these orders.
+  ['goi', 'tui', 'bi', 'bich'],
+  ['chai', 'lo'],
 ]
 
 /** True when two unit names are the same or belong to the same synonym group. */
@@ -270,19 +278,30 @@ export function resolveOrderLine(input: ResolveOrderLineInput): ResolveOrderLine
 
   const pack = parsePackSpec(catalogUnit)
   const sized = pack ? null : parseSizedUnit(catalogUnit)
+  const requestedIsSingleGoiShorthand = requestedQuantity === 1
+    && normalizeUnit(requestedUnit ?? '') === 'g'
+  const equivalentForOrder = (requested: string, catalog: string): boolean =>
+    unitsEquivalent(requested, catalog)
+    || (requestedIsSingleGoiShorthand && normalizeUnit(catalog) === 'goi')
+  const requestedPackagingUnit = ['goi', 'tui', 'bi', 'bich'].includes(normalizeUnit(requestedUnit ?? ''))
+  const pureSizedMeasure = sized?.measureBase !== null
+    && /^\d+(?:[.,]\d+)?\s*[a-zà-ỹ]+\.?$/i.test(catalogUnit.trim())
 
   // 1. Ordered directly in the catalog unit, a synonym of it, or the container name.
   const orderedInCatalogUnit = !requestedUnit
-    || unitsEquivalent(requestedUnit, catalogUnit)
-    || (pack !== null && unitsEquivalent(requestedUnit, pack.container))
-    || (sized !== null && unitsEquivalent(requestedUnit, sized.base))
+    || equivalentForOrder(requestedUnit, catalogUnit)
+    || (pack !== null && equivalentForOrder(requestedUnit, pack.container))
+    || (sized !== null && equivalentForOrder(requestedUnit, sized.base))
+    // BILL sometimes stores a retail pack only as "500gr". A requested bì/gói
+    // is one such catalog pack, not 500 individual grams.
+    || (pureSizedMeasure && requestedPackagingUnit)
     || productUnitsEquivalent(productName, requestedUnit, catalogUnit)
   if (orderedInCatalogUnit) {
     return resolved(requestedQuantity, catalogUnit, catalogPrice, `${requestedQuantity} ${catalogUnit}`)
   }
 
   // 2. Pack sub-unit conversion, e.g. 12 Hộp of "Thùng/24 Hộp".
-  if (pack && pack.subUnit && unitsEquivalent(requestedUnit!, pack.subUnit)) {
+  if (pack && pack.subUnit && equivalentForOrder(requestedUnit!, pack.subUnit)) {
     const quantity = toHalfStep(requestedQuantity / pack.count)
     if (quantity === null) {
       return { ok: false, reason: 'fraction', warning: `Cần xác nhận: ${requestedQuantity} ${requestedUnit} lẻ so với quy cách ${catalogUnit} (chỉ bán nguyên hoặc nửa ${pack.container.toLowerCase()})` }

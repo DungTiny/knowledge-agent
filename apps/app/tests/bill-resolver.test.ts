@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { collectChatMemory, customerQueryKey, emptyChatOrderMemory, normalizeBillText, parseBillMarkdown, resolveBillOrder } from '../server/utils/chat/bill-resolver'
+import { resolveBillOrderInputSchema } from '../server/utils/chat/resolve-bill-order-tool'
 import type { ChatOrderMemory, RequestedOrderItem } from '../server/utils/chat/bill-resolver'
 
 const headers = [
@@ -42,6 +43,17 @@ const billText = [
   ...billRows.map(markdownRow),
 ].join('\n')
 const index = parseBillMarkdown(billText)
+
+describe('resolve_bill_order input', () => {
+  test('defaults an omitted customer unit to empty instead of forcing the model to guess', () => {
+    const parsed = resolveBillOrderInputSchema.parse({
+      customerQuery: 'Anh Công Đức FB',
+      items: [{ lineId: '1', rawName: 'sinh tố đào', requestedQuantity: 1 }],
+    })
+
+    expect(parsed.items?.[0]?.requestedUnit).toBe('')
+  })
+})
 
 const trươngĐịnhItems: RequestedOrderItem[] = [
   { lineId: '1', rawName: 'Mứt xoài', requestedQuantity: 1, requestedUnit: 'Hộp' },
@@ -334,13 +346,13 @@ const mismatchIndex = parseBillMarkdown([
 ].join('\n'))
 
 describe('staff confirmation for a requested unit the catalog does not know', () => {
-  // The bug: the resolver flagged "1 bì" of a "Gói" product pending but issued no
+  // The bug: the resolver flagged "1 bao" of a "Gói" product pending but issued no
   // confirmationId, so no staff confirmation could ever clear it — the order looped.
   test('offers a 1:1 unit confirmation instead of a dead-end pending line', () => {
     const result = resolveBillOrder(mismatchIndex, {
       draftId: crypto.randomUUID(),
       customerQuery: 'MC001',
-      items: [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 1, requestedUnit: 'bì' }],
+      items: [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 1, requestedUnit: 'bao' }],
     })
 
     const line = result.lines[0]!
@@ -352,7 +364,7 @@ describe('staff confirmation for a requested unit the catalog does not know', ()
 
   test('resolves the line 1:1 once staff sends the confirmationId back', () => {
     const draftId = crypto.randomUUID()
-    const items = [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 2, requestedUnit: 'bì' }]
+    const items = [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 2, requestedUnit: 'bao' }]
     const pending = resolveBillOrder(mismatchIndex, { draftId, customerQuery: 'MC001', items })
     const { confirmationId } = pending.lines[0]!.confirmations[0]!
 
@@ -415,6 +427,119 @@ describe('customer name alias: coffee = cafe', () => {
     })
 
     expect(result.customer).toMatchObject({ status: 'resolved', code: 'FB_8074', name: '18Grams Cafe' })
+  })
+})
+
+const congDucCustomer = ['FB_8509', 'Anh Công Đức FB', 'Bảng giá chung']
+const congDucRows = [
+  [...congDucCustomer, 'bot-bone-thung', 'Bột sữa B One', 'Thùng/12 Gói', '28/06/2026', '1', '850000', '', '850000', ''],
+  [...congDucCustomer, 'sua-vinamilk', 'Sữa Tươi Vinamilk KHÔNG Đường 1L', 'Thùng/12 Hộp', '05/07/2026', '1', '420000', '', '420000', ''],
+  [...congDucCustomer, 'sua-vinamilk', 'Sữa Tươi Vinamilk KHÔNG Đường 1L', 'Thùng/12 Hộp', '01/07/2026', '1', '420000', '', '420000', ''],
+  [...congDucCustomer, 'sua-gau', 'Sữa Tươi GẤU NESTLE Không Đường 140ml', 'Lốc/12 Lon', '03/07/2026', '1', '125000', '', '125000', ''],
+  [...congDucCustomer, 'duong-trang', 'Đường Trắng', '10KG', '03/07/2026', '1', '195000', '', '195000', ''],
+  [...congDucCustomer, 'duong-trang', 'Đường Trắng', '10KG', '26/06/2026', '1', '195000', '', '195000', ''],
+  [...congDucCustomer, 'duong-den', 'Đường Đen Hàn Quốc Beksul', 'Gói', '21/06/2026', '2', '53000', '', '53000', ''],
+  // Regression: one-edit matching must not turn "đường" into "muỗng".
+  [...congDucCustomer, 'muong-trang', 'Muỗng Nhựa Trắng 100 Cái', 'Gói', '06/07/2026', '1', '25000', '', '25000', ''],
+  [...congDucCustomer, 'kem-trung-flago', 'Bột Kem Trứng Búp Bê Vàng - Hiệu Flago', 'Kg', '19/05/2026', '1', '155000', '', '155000', ''],
+  [...congDucCustomer, 'kem-trung-lotus', 'Bột Kem Trứng Vàng Búp Bê Lotusfood 1kg', '', '14/06/2026', '1', '140000', '', '140000', ''],
+  // The dated increase was accepted by the 19/05 purchase above.
+  ['FB_8509', 'Anh Công Đức FB', 'Anh Công Đức FB', 'kem-trung-flago', 'Bột Kem Trứng Búp Bê Vàng - Hiệu Flago', 'Kg', '31/12/2026', '', '160000', '5000', '155000', 'Báo Tăng - 12.05.26'],
+  [...congDucCustomer, 'rau-cau-padme', 'Bột Rau Câu Padme', 'Hộp', '03/07/2026', '1', '48000', '', '48000', ''],
+  [...congDucCustomer, 'sinh-to-dao', 'Sinh Tố Berrino Đào 1000Ml', '', '01/07/2026', '1', '89500', '', '89500', ''],
+  [...congDucCustomer, 'richs', 'Kem Béo Thực Vật Richs (454G) - Hàng Lạnh', 'Hộp', '03/07/2026', '5', '30000', '', '30000', ''],
+  [...congDucCustomer, 'base', 'Kem Topping Base - Hàng Lạnh', 'Hộp', '03/07/2026', '1', '84000', '', '84000', ''],
+  [...congDucCustomer, 'mole-dua-luoi', 'Bột Pudding Mole Dưa Lưới 1Kg', 'Gói', '03/06/2026', '1', '205000', '', '205000', ''],
+  [...congDucCustomer, 'tran-chau-den', '1Kg Trân Châu Hàng Huy (2.5) - Đường Đen', 'Gói', '03/07/2026', '5', '33000', '', '33000', ''],
+  [...congDucCustomer, 'dingfong-dau', 'Syrup Thái Dingfong Strawberry ( DÂU )', '', '28/06/2026', '1', '63000', '', '63000', ''],
+  [...congDucCustomer, 'dingfong-vai', 'Syrup Thái Dingfong Lychee ( Vải )', '', '28/06/2026', '1', '63000', '', '63000', ''],
+  [...congDucCustomer, 'gf-mang-cau', 'Syrup Đậm Đặc GF Mãng Cầu 700ml', '', '28/06/2026', '1', '63000', '', '63000', ''],
+  [...congDucCustomer, 'gf-chanh-day', 'Syrup Đậm Đặc GF Chanh Dây 700ml', '', '05/06/2026', '1', '63000', '', '63000', ''],
+  [...congDucCustomer, 'gf-thom', 'Syrup Đậm Đặc GF Thơm (Dứa) 700ml', '', '21/06/2026', '1', '63000', '', '63000', ''],
+  [...congDucCustomer, 'vot-nho', 'Vợt Múc Trân Châu/ Thạch Cỡ Nhỏ', '', '18/03/2026', '2', '20000', '', '20000', ''],
+]
+const congDucIndex = parseBillMarkdown([
+  markdownRow(headers),
+  `|:${headers.map(() => '---').join('|')}|`,
+  ...congDucRows.map(markdownRow),
+].join('\n'))
+
+describe('Anh Công Đức FB shorthand order', () => {
+  test('resolves all 16 lines from customer history without inventing omitted units', () => {
+    const specs: Array<[string, number, string]> = [
+      ['bột béo', 1, 'Thùng'],
+      ['sữa tươi', 1, 'Thùng'],
+      ['đường', 10, 'kg'],
+      ['bột kem trứng brulee', 1, ''],
+      ['rau câu', 1, 'Hộp'],
+      ['sinh tố đào', 1, ''],
+      ['rich', 5, ''],
+      ['base', 1, ''],
+      ['bột mole dưa lưới', 1, ''],
+      ['trân châu đen', 5, ''],
+      ['siro dâu dingfong', 1, ''],
+      ['siro vải dinhfong', 1, ''],
+      ['siro mảng cầu đậm đặc', 1, ''],
+      ['siro chanh dây đậm đặc', 1, ''],
+      ['siro thơm đậm đặc', 1, ''],
+      ['vợt múc trân châu', 1, 'Cái'],
+    ]
+    const items = specs.map(([rawName, requestedQuantity, requestedUnit], index) => ({
+      lineId: String(index + 1),
+      rawName,
+      requestedQuantity,
+      requestedUnit,
+    }))
+
+    const result = resolveBillOrder(congDucIndex, {
+      draftId: crypto.randomUUID(),
+      customerQuery: 'Anh Công Đức FB',
+      items,
+    })
+
+    expect(result.resolutionStatus).toBe('resolved')
+    expect(result.lines.every(line => line.status === 'resolved')).toBe(true)
+    expect(result.lines.map(line => line.matched?.productName)).toEqual([
+      'Bột sữa B One',
+      'Sữa Tươi Vinamilk KHÔNG Đường 1L',
+      'Đường Trắng',
+      'Bột Kem Trứng Búp Bê Vàng - Hiệu Flago',
+      'Bột Rau Câu Padme',
+      'Sinh Tố Berrino Đào 1000Ml',
+      'Kem Béo Thực Vật Richs (454G) - Hàng Lạnh',
+      'Kem Topping Base - Hàng Lạnh',
+      'Bột Pudding Mole Dưa Lưới 1Kg',
+      '1Kg Trân Châu Hàng Huy (2.5) - Đường Đen',
+      'Syrup Thái Dingfong Strawberry ( DÂU )',
+      'Syrup Thái Dingfong Lychee ( Vải )',
+      'Syrup Đậm Đặc GF Mãng Cầu 700ml',
+      'Syrup Đậm Đặc GF Chanh Dây 700ml',
+      'Syrup Đậm Đặc GF Thơm (Dứa) 700ml',
+      'Vợt Múc Trân Châu/ Thạch Cỡ Nhỏ',
+    ])
+    expect(result.lines.map(line => line.resolved?.unitPrice)).toEqual([
+      850_000,
+      420_000,
+      195_000,
+      155_000,
+      48_000,
+      89_500,
+      30_000,
+      84_000,
+      205_000,
+      33_000,
+      63_000,
+      63_000,
+      63_000,
+      63_000,
+      63_000,
+      20_000,
+    ])
+    expect(result.lines[2]!.candidates.map(candidate => candidate.productName)).not.toContain('Muỗng Nhựa Trắng 100 Cái')
+    expect(result.lines[3]).toMatchObject({ status: 'resolved', evidence: { priceSource: 'latest_positive_history' } })
+    expect(result.lines[5]).toMatchObject({ status: 'resolved', evidence: { unitSource: 'implicit_each' } })
+    expect(result.lines[15]).toMatchObject({ status: 'resolved', evidence: { unitSource: 'business_override' } })
+    expect(result.orderDraft).toMatchObject({ totalQuantity: 24, totalAmount: 2_696_500, pendingCount: 0 })
   })
 })
 
@@ -606,13 +731,13 @@ describe('chat-scoped confirmation memory (ADR 0001)', () => {
       unitMappings: [
         {
           productKey: normalizeBillText('Trân Châu 3Q Talinh Trắng'),
-          requestedUnitKey: normalizeBillText('bì'),
+          requestedUnitKey: normalizeBillText('bao'),
           kind: 'requested-equals-catalog',
           catalogUnitKey,
         }
       ],
     })
-    const items: RequestedOrderItem[] = [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 2, requestedUnit: 'bì' },]
+    const items: RequestedOrderItem[] = [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 2, requestedUnit: 'bao' },]
 
     const current = resolveBillOrder(mismatchIndex, {
       draftId: crypto.randomUUID(),
@@ -817,7 +942,7 @@ describe('collectChatMemory', () => {
   })
 
   test('records a requested-equals-catalog confirmation with the catalog unit it was made against', () => {
-    const items = [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 2, requestedUnit: 'bì' }]
+    const items = [{ lineId: '1', rawName: 'Trân châu trắng', requestedQuantity: 2, requestedUnit: 'bao' }]
     const pending = resolveBillOrder(mismatchIndex, { draftId: crypto.randomUUID(), customerQuery: 'MC001', items })
     const { confirmationId } = pending.lines[0]!.confirmations[0]!
 
@@ -829,7 +954,7 @@ describe('collectChatMemory', () => {
 
     expect(memory.unitMappings).toContainEqual({
       productKey: normalizeBillText('Trân Châu 3Q Talinh Trắng'),
-      requestedUnitKey: normalizeBillText('bì'),
+      requestedUnitKey: normalizeBillText('bao'),
       kind: 'requested-equals-catalog',
       catalogUnitKey: normalizeBillText('Gói'),
     })

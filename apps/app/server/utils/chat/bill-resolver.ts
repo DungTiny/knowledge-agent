@@ -1,4 +1,4 @@
-import { parsePackSpec, parseSizedUnit, resolveOrderLine, unitFromProductName } from '../../../shared/utils/uom'
+import { parsePackSpec, parseSizedUnit, resolveOrderLine, unitFromProductName, unitsEquivalent } from '../../../shared/utils/uom'
 
 export const BILL_STATIC_DATE = '31/12/2026'
 
@@ -98,7 +98,7 @@ export interface ResolvedBillLine {
   evidence: {
     selectionSource?: 'positive_history' | 'static_price' | 'staff_confirmation' | 'chat_memory'
     priceSource?: 'latest_positive_history' | 'static_price'
-    unitSource?: 'history' | 'static_price' | 'business_override' | 'product_name' | 'staff_confirmation' | 'chat_memory'
+    unitSource?: 'history' | 'history_quantity_pattern' | 'static_price' | 'business_override' | 'product_name' | 'positive_history' | 'implicit_each' | 'staff_confirmation' | 'chat_memory'
     rowDates: string[]
   }
   candidates: Array<{ candidateId: string, sku: string, productName: string, reason: string }>
@@ -143,7 +143,11 @@ export interface ResolveBillOrderOutput {
   orderDraft: ResolvedOrderDraft | null
 }
 
-const BUSINESS_UNIT_OVERRIDES = [{ productTokens: ['thach', 'agar', 'chuandai'], unit: 'Túi 3.05Kg' },]
+const BUSINESS_UNIT_OVERRIDES = [
+  { productTokens: ['thach', 'agar', 'chuandai'], unit: 'Túi 3.05Kg' },
+  // BILL has no ĐVT for this utensil, while "cái" is its unambiguous count unit.
+  { productTokens: ['vot', 'muc', 'tran', 'chau'], unit: 'Cái' },
+]
 
 const PLAIN_UNITS = new Set([
   'hop',
@@ -163,6 +167,7 @@ const PLAIN_UNITS = new Set([
   'l',
   'lit',
   'bi',
+  'bich',
   'banh',
   'phong',
   'cuon',
@@ -334,20 +339,153 @@ function isPositiveHistory(row: BillRow): boolean {
 const PRODUCT_TOKEN_SYNONYMS: Record<string, string> = {
   // Khách gọi "siro"; BILL.md ghi "Syrup" (vd: Syrup Davinci Vải 750ml).
   siro: 'syrup',
+  // F&B shorthand: "bột béo" is the same catalog family as "bột sữa".
+  beo: 'sua',
+  // Staff/customer shorthand for the Flago creme-brulee powder variant.
+  brulee: 'flago',
+  // "sto" is the customer's compact form of "sinh tố".
+  sto: 'sinh',
+  // Common Vietnamese chat shorthand: "ko đường" → "không đường".
+  ko: 'khong',
 }
 
 function canonicalProductToken(token: string): string {
   return PRODUCT_TOKEN_SYNONYMS[token] ?? token
 }
 
-function productMatches(row: BillRow, rawName: string): boolean {
-  const queryTokens = tokens(rawName).map(canonicalProductToken)
-  if (queryTokens.length === 0) return false
-  const haystack = tokens(`${row['Tên hàng']} ${row['Mã hàng']}`).map(canonicalProductToken).join(' ')
-  return queryTokens.every(token => haystack.includes(token))
+/** Customer vocabulary that needs phrase context rather than a global token alias. */
+function productQueryTokens(rawName: string): string[] {
+  let queryTokens = tokens(rawName).map(canonicalProductToken)
+  const has = (...required: string[]) => required.every(token => queryTokens.includes(token))
+
+  if (has('syrup', 'oi', 'hong')) queryTokens = queryTokens.filter(token => token !== 'hong')
+  if (has('ong', 'hut', 'to')) {
+    queryTokens = [...queryTokens.filter(token => token !== 'to'), 'tran', 'chau']
+  }
+  if (has('ong', 'hut', 'nho')) {
+    queryTokens = [...queryTokens.filter(token => token !== 'nho'), 'p6']
+  }
+  if (has('rich', 'lun')) queryTokens = queryTokens.filter(token => token !== 'lun')
+  if (has('dua', 'kho', 'vun')) {
+    queryTokens = queryTokens.map(token => token === 'kho' ? 'nuong' : token)
+  }
+  if (has('bot', 'sua', 'tra')) {
+    // "bột béo trà sữa" describes the category; customer history decides the brand.
+    queryTokens = queryTokens.filter(token => token !== 'tra')
+  }
+  if (has('syrup', 'trai', 'cay')) {
+    queryTokens = queryTokens.filter(token => token !== 'trai' && token !== 'cay')
+    queryTokens.push('nhiet', 'doi')
+  }
+
+  return unique(queryTokens)
 }
 
-function isValidCatalogUnit(unit: string): boolean {
+/**
+ * One-edit typo tolerance for long tokens only ("dinhfong" → "dingfong",
+ * "rich" → "richs"). Customer-code scoping and later ambiguity checks still
+ * apply, so this never authorizes a cross-customer or arbitrary fuzzy result.
+ */
+function isOneEditApart(left: string, right: string): boolean {
+  if (left === right) return true
+  if (Math.min(left.length, right.length) < 4 || Math.abs(left.length - right.length) > 1) return false
+  // Changing the first character usually changes the word/category entirely
+  // ("đường" vs "muỗng"), while the typos we accept preserve the prefix.
+  if (left[0] !== right[0]) return false
+
+  if (left.length === right.length) {
+    let differences = 0
+    for (let index = 0; index < left.length; index++) {
+      if (left[index] !== right[index] && ++differences > 1) return false
+    }
+    return differences === 1
+  }
+
+  const [shorter, longer] = left.length < right.length ? [left, right] : [right, left]
+  let shortIndex = 0
+  let longIndex = 0
+  let skipped = false
+  while (shortIndex < shorter.length && longIndex < longer.length) {
+    if (shorter[shortIndex] === longer[longIndex]) {
+      shortIndex++
+      longIndex++
+      continue
+    }
+    if (skipped) return false
+    skipped = true
+    longIndex++
+  }
+  return true
+}
+
+function productMatches(row: BillRow, rawName: string): boolean {
+  const queryTokens = productQueryTokens(rawName)
+  if (queryTokens.length === 0) return false
+  const haystackTokens = tokens(`${row['Tên hàng']} ${row['Mã hàng']}`).map(canonicalProductToken)
+  return queryTokens.every(queryToken =>
+    haystackTokens.some(productToken => isOneEditApart(queryToken, productToken)),
+  )
+}
+
+/**
+ * A one-word category such as "đường" can occur incidentally in dozens of
+ * unrelated products ("sữa ... không đường", "trân châu ... đường đen"). If
+ * this customer's history has products whose names start with that category,
+ * keep that narrower set and let recency + frequency choose within it.
+ */
+function narrowLeadingCategory(rows: BillRow[], rawName: string): BillRow[] {
+  const queryTokens = productQueryTokens(rawName)
+  if (queryTokens.length === 0 || rows.length < 2) return rows
+  const prefixRows = rows.filter((row) => {
+    const nameTokens = tokens(row['Tên hàng']).map(canonicalProductToken)
+    const leadingToken = nameTokens.find(token => !/\d/.test(token))
+    return leadingToken !== undefined && isOneEditApart(queryTokens[0]!, leadingToken)
+  })
+  return prefixRows.length > 0 ? prefixRows : rows
+}
+
+/**
+ * Some BILL exports put the container after the measure ("500gram (gói)").
+ * Convert that display form into the same container-first shape used by the
+ * billing engine, without changing the source file in the sandbox.
+ */
+function catalogUnitForBilling(rawUnit: string): string {
+  const unit = rawUnit.trim()
+  const match = unit.match(/^(\d+(?:[.,]\d+)?\s*(?:kg|g|gr|gram|ml|l))\s*\(([^)]+)\)$/i)
+  if (!match) return unit
+  const container = match[2]!.trim()
+  if (!PLAIN_UNITS.has(normalizeBillText(container))) return unit
+  return `${container.charAt(0).toUpperCase()}${container.slice(1)} ${match[1]!.trim()}`
+}
+
+function catalogUnitMatchesRequest(rawCatalogUnit: string, requestedUnit: string): boolean {
+  const catalogUnit = catalogUnitForBilling(rawCatalogUnit)
+  if (!catalogUnit || !requestedUnit.trim()) return false
+  if (unitsEquivalent(requestedUnit, catalogUnit)) return true
+  const pack = parsePackSpec(catalogUnit)
+  if (pack && (unitsEquivalent(requestedUnit, pack.container) || unitsEquivalent(requestedUnit, pack.subUnit))) return true
+  const sized = parseSizedUnit(catalogUnit)
+  return sized.measureBase !== null && unitsEquivalent(requestedUnit, sized.base)
+}
+
+/** Use an explicit requested unit to remove impossible product branches. */
+function narrowByRequestedUnit(rows: BillRow[], requestedUnit: string): BillRow[] {
+  const productCount = new Set(rows.map(row => normalizeBillText(row['Tên hàng']))).size
+  if (!requestedUnit.trim() || productCount < 2) return rows
+  const matching = rows.filter(row => catalogUnitMatchesRequest(row['ĐVT'], requestedUnit))
+  return matching.length > 0 ? matching : rows
+}
+
+/** "chanh" means plain lemon when a plain-lemon history row exists, not chanh dây. */
+function narrowFlavorVariant(rows: BillRow[], rawName: string): BillRow[] {
+  const queryTokens = productQueryTokens(rawName)
+  if (!queryTokens.includes('chanh') || queryTokens.includes('day')) return rows
+  const plainLemon = rows.filter(row => !tokens(row['Tên hàng']).includes('day'))
+  return plainLemon.length > 0 ? plainLemon : rows
+}
+
+function isValidCatalogUnit(rawUnit: string): boolean {
+  const unit = catalogUnitForBilling(rawUnit)
   if (!unit.trim()) return false
   if (parsePackSpec(unit)) return true
   const sized = parseSizedUnit(unit)
@@ -362,7 +500,8 @@ function businessUnitOverride(productName: string): string | null {
   )?.unit ?? null
 }
 
-function unitVariantMatches(catalogUnit: string, requestedUnit: string): boolean {
+function unitVariantMatches(rawCatalogUnit: string, requestedUnit: string): boolean {
+  const catalogUnit = catalogUnitForBilling(rawCatalogUnit)
   const requested = normalizeBillText(requestedUnit)
   if (!requested || !catalogUnit.trim()) return false
   if (normalizeBillText(catalogUnit) === requested) return true
@@ -375,11 +514,42 @@ function unitVariantMatches(catalogUnit: string, requestedUnit: string): boolean
  * "Thùng/12 Hộp"). When the requested unit names one of them, scope the
  * evidence to that variant instead of letting the newest row win.
  */
-function scopeRowsToRequestedUnit(rows: BillRow[], requestedUnit: string): BillRow[] {
-  const units = unique(rows.map(row => normalizeBillText(row['ĐVT'])).filter(Boolean))
+function scopeRowsToRequest(rows: BillRow[], requestedUnit: string, requestedQuantity: number): BillRow[] {
+  const unitKey = (row: BillRow) => normalizeBillText(catalogUnitForBilling(row['ĐVT']))
+  const units = unique(rows.map(unitKey).filter(Boolean))
   if (units.length < 2) return rows
-  const matching = rows.filter(row => unitVariantMatches(row['ĐVT'], requestedUnit))
-  return matching.length > 0 ? matching : rows
+  if (requestedUnit.trim()) {
+    const matching = rows.filter(row => unitVariantMatches(row['ĐVT'], requestedUnit))
+    if (matching.length > 0) return matching
+  }
+
+  // Shorthand such as "5 ống hút nhỏ" omits the package unit. When this exact
+  // quantity has only ever been bought in one of the product's variants, use
+  // that variant as customer-specific evidence (5 Bì, versus 1 Thùng).
+  const exactQuantityRows = rows.filter(row => parseNumber(row['Số lượng']) === requestedQuantity)
+  const exactUnits = unique(exactQuantityRows.map(unitKey).filter(Boolean))
+  return exactUnits.length === 1 ? rows.filter(row => unitKey(row) === exactUnits[0]) : rows
+}
+
+/**
+ * A customer may repeatedly write a colloquial package word that BILL does not
+ * use (for example "6 lốc" while every six-unit purchase is stored as Hộp).
+ * Only accept that 1:1 interpretation when the product has multiple variants,
+ * the requested unit matches none of them, and at least two real purchases with
+ * the exact requested quantity agree on one catalog unit.
+ */
+function repeatedHistoryUnitForRequest(
+  rows: BillRow[],
+  requestedUnit: string,
+  requestedQuantity: number,
+): string | null {
+  if (!requestedUnit.trim() || rows.some(row => unitVariantMatches(row['ĐVT'], requestedUnit))) return null
+  const units = unique(rows.map(row => normalizeBillText(catalogUnitForBilling(row['ĐVT']))).filter(Boolean))
+  if (units.length < 2) return null
+  const exactRows = rows.filter(row => parseNumber(row['Số lượng']) === requestedQuantity && isValidCatalogUnit(row['ĐVT']))
+  const exactUnits = unique(exactRows.map(row => normalizeBillText(catalogUnitForBilling(row['ĐVT']))))
+  if (exactRows.length < 2 || exactUnits.length !== 1) return null
+  return catalogUnitForBilling(exactRows[0]!['ĐVT'])
 }
 
 function staticRowsForCustomer(index: BillIndex, customerCode: string): BillRow[] {
@@ -433,8 +603,20 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
 
   const historyScope = dedupeRows(index.rows.filter(row => row['Mã khách hàng'] === customerCode && isPositiveHistory(row)))
   const staticScope = dedupeRows(staticRowsForCustomer(index, customerCode))
-  let historyMatches = historyScope.filter(row => productMatches(row, item.rawName))
-  let staticMatches = staticScope.filter(row => productMatches(row, item.rawName))
+  let historyMatches = narrowLeadingCategory(
+    narrowFlavorVariant(
+      narrowByRequestedUnit(historyScope.filter(row => productMatches(row, item.rawName)), item.requestedUnit),
+      item.rawName,
+    ),
+    item.rawName,
+  )
+  let staticMatches = narrowLeadingCategory(
+    narrowFlavorVariant(
+      narrowByRequestedUnit(staticScope.filter(row => productMatches(row, item.rawName)), item.requestedUnit),
+      item.rawName,
+    ),
+    item.rawName,
+  )
 
   // A confirmed per-customer alias narrows/overrides token matching — but only
   // when the aliased product still exists in this customer's history/price list.
@@ -494,17 +676,26 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     }
   }
   if (!selectedProduct && historyMatches.length > 0 && candidateGroups.size > 1) {
+    const newestCandidateTimestamp = Math.max(...historyMatches.map(row => parseDate(row['Thời gian'])))
+    const recentCutoff = newestCandidateTimestamp - 30 * 24 * 60 * 60 * 1000
     const ranked = [...candidateGroups.values()]
       .map(rows => ({
         productName: rows[0]!['Tên hàng'],
         count: rows.length,
+        recentCount: rows.filter(row => parseDate(row['Thời gian']) >= recentCutoff).length,
         latest: Math.max(...rows.map(row => parseDate(row['Thời gian']))),
       }))
       .sort((a, b) => b.latest - a.latest || b.count - a.count)
     const [first, second] = ranked
-    // Auto-select only when both recency and deduplicated frequency agree.
-    // Otherwise the generic request remains ambiguous and needs staff input.
-    if (first && second && first.latest > second.latest && first.count > second.count) {
+    // Prefer a newer product when either all-time frequency agrees, or the
+    // customer has repeatedly bought it during the latest 30-day window. The
+    // latter captures a genuine product switch without letting one recent
+    // outlier override an established preference.
+    const allTimePreference = first && second && first.latest > second.latest && first.count > second.count
+    const recentPreference = first && first.recentCount >= 2 && ranked.slice(1).every(other =>
+      first.latest > other.latest && first.recentCount > other.recentCount,
+    )
+    if (first && (allTimePreference || recentPreference)) {
       selectedProduct = first.productName
       selectionSource = 'positive_history'
     }
@@ -526,13 +717,21 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   }
 
   const productKey = normalizeBillText(selectedProduct)
-  const productHistory = scopeRowsToRequestedUnit(
-    historyScope.filter(row => normalizeBillText(row['Tên hàng']) === productKey),
+  const fullProductHistory = historyScope.filter(row => normalizeBillText(row['Tên hàng']) === productKey)
+  const historyQuantityUnit = repeatedHistoryUnitForRequest(
+    fullProductHistory,
     item.requestedUnit,
+    item.requestedQuantity,
   )
-  const productStatic = scopeRowsToRequestedUnit(
+  const productHistory = scopeRowsToRequest(
+    fullProductHistory,
+    item.requestedUnit,
+    item.requestedQuantity,
+  )
+  const productStatic = scopeRowsToRequest(
     staticScope.filter(row => normalizeBillText(row['Tên hàng']) === productKey),
     item.requestedUnit,
+    item.requestedQuantity,
   )
   const newestHistoryRows = latestRows(productHistory)
   const newest = newestHistoryRows[0] ?? productStatic[0]!
@@ -554,7 +753,22 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
   // invalidates the remembered approval (ADR 0001).
   const memoryPriceApproved = price !== null && (memory?.priceConfirmations.some(entry =>
     entry.customerCode === customerCode && entry.productKey === productKey && entry.price === price) ?? false)
-  const priceFlagged = /hỏi\s*lại\s*giá|báo\s*tăng/i.test(flags)
+  const priceFlagDate = flags.match(/(?:báo\s*tăng)[^\d]*(\d{1,2})[./](\d{1,2})[./](\d{2,4})/i)
+  const priceFlagTimestamp = priceFlagDate
+    ? Date.UTC(
+      Number(priceFlagDate[3]!) < 100 ? Number(priceFlagDate[3]!) + 2000 : Number(priceFlagDate[3]!),
+      Number(priceFlagDate[2]!) - 1,
+      Number(priceFlagDate[1]!),
+    )
+    : null
+  // A dated "Báo Tăng" is no longer pending once the customer bought the same
+  // SKU again at that price after the notice. "Hỏi lại giá" remains explicit.
+  const acceptedDatedIncrease = price !== null
+    && priceFlagTimestamp !== null
+    && productHistory.some(row =>
+      parseDate(row['Thời gian']) >= priceFlagTimestamp && parseNumber(row['Giá bán']) === price)
+  const priceFlagged = /hỏi\s*lại\s*giá/i.test(flags)
+    || (/báo\s*tăng/i.test(flags) && !acceptedDatedIncrease)
   if (priceFlagged && !confirmedIds.has(priceConfirmationId) && memoryPriceApproved) usedChatMemory = true
   const priceNeedsConfirmation = priceFlagged
     && !confirmedIds.has(priceConfirmationId)
@@ -577,7 +791,24 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     ? item.requestedUnit
     : null
   const confirmedUnit = draftConfirmedUnit ?? memoryUnit
-  const unit = historyUnitRow?.['ĐVT'] ?? staticUnitRow?.['ĐVT'] ?? overrideUnit ?? nameUnit ?? confirmedUnit
+  const requestedPackaging = ['goi', 'tui', 'bi', 'bich'].includes(normalizeBillText(item.requestedUnit))
+  const productCarriesMeasure = /\d+(?:[.,]\d+)?\s*(?:kg|g|gr|gram|ml|l)\b/i.test(selectedProduct)
+  const implicitRequestedUnit = !historyUnitRow && !staticUnitRow && !overrideUnit && !nameUnit
+    && requestedPackaging && productCarriesMeasure
+    ? item.requestedUnit
+    : null
+  // If neither the customer nor BILL states a unit, quantity is already the
+  // catalog count (one price-bearing row = one item). Use an honest neutral
+  // label instead of forcing the model to invent "chai", "hộp", etc.
+  const implicitEachUnit = !item.requestedUnit.trim() && !historyUnitRow && !staticUnitRow
+    && !overrideUnit && !nameUnit
+    ? 'Đơn vị'
+    : null
+  const unit = historyUnitRow
+    ? catalogUnitForBilling(historyUnitRow['ĐVT'])
+    : staticUnitRow
+      ? catalogUnitForBilling(staticUnitRow['ĐVT'])
+      : overrideUnit ?? nameUnit ?? implicitRequestedUnit ?? implicitEachUnit ?? confirmedUnit
   // The catalog has a ĐVT but the customer ordered in another unit ("1 bì" of a
   // "Gói" product). Staff can map it 1:1; until they do, the line stays pending.
   const mappingConfirmationId = `unit:${encodeURIComponent(item.lineId)}:requested-equals-catalog`
@@ -590,16 +821,21 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     && entry.requestedUnitKey === requestedUnitKey
     && entry.catalogUnitKey === normalizeBillText(unit)) ?? false)
   const unitMappedByStaff = draftMapped || memoryMapped
+  const unitMappedByHistory = historyQuantityUnit !== null
+    && unit !== null
+    && normalizeBillText(historyQuantityUnit) === normalizeBillText(unit)
   if (memoryMapped) usedChatMemory = true
   const unitSource = draftMapped
     ? 'staff_confirmation' as const
     : memoryMapped
       ? 'chat_memory' as const
       : historyUnitRow
-        ? 'history' as const
+        ? unitMappedByHistory ? 'history_quantity_pattern' as const : 'history' as const
         : staticUnitRow ? 'static_price' as const
         : overrideUnit ? 'business_override' as const
         : nameUnit ? 'product_name' as const
+        : implicitRequestedUnit ? 'positive_history' as const
+        : implicitEachUnit ? 'implicit_each' as const
         : draftConfirmedUnit ? 'staff_confirmation' as const
         : memoryUnit ? 'chat_memory' as const : undefined
   if (unitSource === 'chat_memory' && memoryUnit) usedChatMemory = true
@@ -650,7 +886,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     catalogPrice: price,
     requestedQuantity: item.requestedQuantity,
     // Staff confirmed 1 requested unit = 1 catalog unit → bill in the catalog unit.
-    requestedUnit: unitMappedByStaff ? undefined : item.requestedUnit,
+    requestedUnit: unitMappedByStaff || unitMappedByHistory ? undefined : item.requestedUnit,
   })
   if (!calculated.ok) {
     // A fractional pack ("5 Hộp" of "Thùng/24 Hộp") must never be offered as a

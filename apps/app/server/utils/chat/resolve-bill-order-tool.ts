@@ -9,7 +9,7 @@ const requestedItemSchema = z.object({
   lineId: z.string().min(1),
   rawName: z.string().min(1),
   requestedQuantity: z.number().positive(),
-  requestedUnit: z.string().min(1),
+  requestedUnit: z.string().default('').describe('Unit exactly as written by the customer. Use an empty string when the customer did not state a unit; never infer one.'),
 })
 
 const selectionSchema = z.object({
@@ -33,6 +33,8 @@ const inputSchema = z.object({
     ctx.addIssue({ code: 'custom', message: 'A new order requires customerQuery and items' })
   }
 })
+
+export const resolveBillOrderInputSchema = inputSchema
 
 interface StoredBillDraft {
   customerQuery: string

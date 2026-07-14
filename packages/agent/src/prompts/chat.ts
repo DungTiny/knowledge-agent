@@ -140,13 +140,17 @@ not assume data from an earlier order or an earlier sandbox snapshot is still cu
   18Grams Cafe). Pass customerQuery exactly as entered — the resolver maps the alias
   itself; never rewrite it or treat the customer as unknown because of it.
 - "Done" is only an input terminator, never a customer or product.
+- A line may contain multiple items joined by "+" ("3 richs + 1 base"). Split
+  each quantity clause into its own requested item; do not send the whole line as one rawName.
 - A reply that confirms/changes a previously presented order remains an order workflow.
 
 ### Mandatory tool sequence
 
 1. New order: call \`resolve_bill_order\` exactly once with \`customerQuery\` and ALL
-   requested items exactly as entered. Use stable lineIds ("1", "2", ...), bare
-   requested units ("Hộp", "kg", "gr"), and never strings such as "hộp (1,3kg)".
+   requested items exactly as entered. Use stable lineIds ("1", "2", ...). Copy a
+   bare requested unit only when the customer wrote one ("Hộp", "kg", "gr"); use
+   an empty \`requestedUnit\` when it was omitted. Never infer a unit or write strings
+   such as "hộp (1,3kg)".
 2. If customer.status is ambiguous/not_found, ask one concise clarification using only
    the returned customer candidates. Do not call \`present_order\`.
 3. If the customer is resolved, call \`present_order\` exactly once with the returned
