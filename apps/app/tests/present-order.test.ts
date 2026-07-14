@@ -62,6 +62,30 @@ describe('present_order trust boundary', () => {
     expect(presentOrderInputSchema.parse(pendingInput).items[0]).toMatchObject({ name: 'mứt ổi' })
   })
 
+  test('accepts nullable catalogPrice on pending resolver lines', () => {
+    const pendingInput = {
+      ...tamperedInput,
+      items: [
+        {
+          lineId: '1',
+          name: 'Bột Matcha Đài Loan Lotusfood 100gr',
+          quantity: 0,
+          unit: 'Gói',
+          orderedQuantity: 100,
+          orderedUnit: 'g',
+          catalogPrice: null,
+          unitPrice: null,
+          lineTotal: null,
+        }
+      ],
+      totalQuantity: 0,
+      totalAmount: 0,
+      pendingCount: 1,
+    }
+
+    expect(presentOrderInputSchema.parse(pendingInput).items[0]?.catalogPrice).toBeNull()
+  })
+
   // The bug: the model re-typed the resolver draft into present_order and invented
   // 150.000đ for matcha; the card rendered it because unitPrice was trusted.
   test('renders the stored resolver draft, ignoring a tampered model price', async () => {
@@ -72,6 +96,33 @@ describe('present_order trust boundary', () => {
 
     expect(result.items[0]).toMatchObject({ unitPrice: 135_000, lineTotal: 135_000 })
     expect(result.totalAmount).toBe(135_000)
+  })
+
+  test('does not re-apply unit rules to an authoritative stored draft', async () => {
+    const authoritative: OrderDraft = {
+      customerName: '111 Nguyễn Huệ',
+      customerCode: 'FB_2480',
+      items: [
+        {
+          lineId: '3',
+          name: 'Sữa Tươi Vinamilk KHÔNG Đường 1L',
+          orderedQuantity: 6,
+          orderedUnit: 'lốc',
+          quantity: 6,
+          unit: 'Hộp',
+          unitPrice: 36_000,
+          lineTotal: 216_000,
+        }
+      ],
+      totalQuantity: 6,
+      totalAmount: 216_000,
+      pendingCount: 0,
+    }
+    const presentOrder = createPresentOrderTool(() => Promise.resolve(authoritative))
+
+    const result = await presentOrder.execute!({ ...tamperedInput, draftId: tamperedInput.draftId }, toolOptions as never)
+
+    expect(result).toEqual(authoritative)
   })
 
   test('fails loudly when the draftId is unknown instead of trusting the model copy', () => {

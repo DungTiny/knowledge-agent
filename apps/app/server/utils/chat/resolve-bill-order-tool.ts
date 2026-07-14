@@ -81,7 +81,7 @@ export function createResolveBillOrderTool(
   loadBillSource: () => Promise<SandboxBillSource>,
 ) {
   return tool({
-    description: `Resolve a complete Mộc Trà order deterministically from the current BILL.md in the synced sandbox snapshot. Use exactly once for a new itemized order and once for each revision. This tool resolves the customer, customer-scoped product variants, latest valid prices, ĐVT conversions, warnings, totals, and returns an orderDraft for present_order. Never use bash/web search or calculate order lines yourself when this tool is available.`,
+    description: `Resolve a complete Mộc Trà order deterministically from the current BILL.md in the synced sandbox snapshot. Use exactly once for a new itemized order and once for each revision. This tool resolves the customer, customer-scoped product variants, latest valid prices, ĐVT conversions, warnings, totals, and returns an orderDraft for present_order. A fuzzy shorthand match or even one candidate remains pending until accounting staff selects the exact resolver-issued candidate/confirmation with its product, SKU, ĐVT, evidenced price, and evidence date. Never infer a product or price, and never use bash/web search or calculate order lines yourself when this tool is available.`,
     inputSchema,
     execute: async (input) => {
       const start = Date.now()

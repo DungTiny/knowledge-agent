@@ -336,6 +336,8 @@ export function resolveOrderLine(input: ResolveOrderLineInput): ResolveOrderLine
 }
 
 export interface OrderLineItem {
+  /** Stable resolver line id used for staff confirmations. */
+  lineId?: string
   name: string
   sku?: string
   orderedQuantity?: number
@@ -349,7 +351,24 @@ export interface OrderLineItem {
    */
   unitConfirmed?: boolean
   /** Known price retained when a line is pending only because of its unit. */
-  catalogPrice?: number
+  catalogPrice?: number | null
+  /** Product choices issued by the resolver. Never invented by the model/UI. */
+  candidates?: Array<{
+    candidateId: string
+    sku: string
+    productName: string
+    reason: string
+    unit?: string
+    unitPrice?: number
+    rowDate?: string
+  }>
+  /** Unit/price confirmations issued by the resolver. */
+  confirmations?: Array<{
+    confirmationId: string
+    kind: 'unit' | 'price'
+    label: string
+    reason: string
+  }>
   unitPrice: number | null
   lineTotal: number | null
   note?: string

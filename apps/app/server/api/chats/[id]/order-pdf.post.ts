@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { renderOrderBillPdf } from '../../../utils/pdf/order-bill'
 import type { PostOrderPdfBody, PostOrderPdfResponse } from '#shared/types/chat'
 import type { PresentOrderUIToolInvocation } from '#shared/utils/tools/present-order'
+import type { OrderDraft } from '#shared/utils/uom'
 
 const paramsSchema = z.object({
   id: z.string().min(1, 'Missing chat ID'),
@@ -62,13 +63,20 @@ export default defineEventHandler(async (event) => {
 
   // Source of truth is the tool output stored in the DB, never client-supplied numbers.
   const parts = (message.parts ?? []) as Array<{ type: string, toolCallId?: string, state?: string, output?: unknown }>
-  const toolPart = parts.find(p => p.type === 'tool-present_order' && p.toolCallId === toolCallId) as PresentOrderUIToolInvocation | undefined
+  const presentPart = parts.find(p => p.type === 'tool-present_order' && p.toolCallId === toolCallId) as PresentOrderUIToolInvocation | undefined
+  const resolverPart = parts.find(p => p.type === 'tool-resolve_bill_order' && p.toolCallId === toolCallId) as {
+    state?: string
+    output?: { orderDraft?: OrderDraft | null }
+  } | undefined
+  const order = presentPart?.state === 'output-available'
+    ? presentPart.output
+    : resolverPart?.state === 'output-available'
+      ? resolverPart.output?.orderDraft
+      : null
 
-  if (!toolPart || toolPart.state !== 'output-available' || !toolPart.output) {
+  if (!order) {
     throw createError({ statusCode: 400, statusMessage: 'Order data not found', data: { why: 'The referenced tool call has no resolved order output', fix: 'Regenerate the order in chat before confirming' } })
   }
-
-  const order = toolPart.output
 
   if (order.pendingCount > 0) {
     throw createError({ statusCode: 400, statusMessage: 'Order has unresolved lines', data: { why: `${order.pendingCount} line(s) still need staff confirmation`, fix: 'Resolve all pending lines before generating the bill PDF' } })

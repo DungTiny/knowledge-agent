@@ -47,12 +47,32 @@ const ATTACHED_PRODUCT_SHORTHAND_PATTERN = /^(?:siro|srio|sto|ong|puding|richs?|
  */
 export function normalizeRequestedOrderItem(item: RequestedOrderItem): RequestedOrderItem {
   const rawName = item.rawName.trim()
+  let requestedUnit = item.requestedUnit.trim()
+
+  // A model can mistake the first product word for a unit ("5 trà đào" →
+  // requestedUnit="trà", rawName="trà đào"). Only clear it when that same
+  // word is still present in rawName and it is not one of the known units.
+  const firstRawWord = rawName.split(/\s+/u)[0] ?? ''
+  if (requestedUnit
+    && firstRawWord.localeCompare(requestedUnit, 'vi', { sensitivity: 'base' }) === 0
+    && !LEADING_ORDER_UNIT_PATTERN.test(requestedUnit)) {
+    requestedUnit = ''
+  }
+
   const quantityPrefix = rawName.match(/^(\d+(?:[.,]\d+)?)(\s*)/u)
-  if (!quantityPrefix) return { ...item, rawName }
+  if (!quantityPrefix) {
+    let productName = rawName
+    const unitPrefix = productName.match(LEADING_ORDER_UNIT_PATTERN)
+    if (unitPrefix) {
+      productName = productName.slice(unitPrefix[0].length).trimStart()
+      requestedUnit ||= unitPrefix[0]
+    }
+    return productName ? { ...item, rawName: productName, requestedUnit } : { ...item, rawName, requestedUnit }
+  }
 
   const parsedQuantity = Number(quantityPrefix[1]!.replace(',', '.'))
   if (!Number.isFinite(parsedQuantity) || Math.abs(parsedQuantity - item.requestedQuantity) > 1e-9) {
-    return { ...item, rawName }
+    return { ...item, rawName, requestedUnit }
   }
 
   let productName = rawName.slice(quantityPrefix[0].length).trimStart()
@@ -60,13 +80,13 @@ export function normalizeRequestedOrderItem(item: RequestedOrderItem): Requested
   const startsWithUnit = LEADING_ORDER_UNIT_PATTERN.test(productName)
   const startsWithKnownShorthand = ATTACHED_PRODUCT_SHORTHAND_PATTERN.test(productName)
   if (!quantityWasSeparated && !startsWithUnit && !startsWithKnownShorthand) {
-    return { ...item, rawName }
+    return { ...item, rawName, requestedUnit }
   }
 
   const unitPrefix = productName.match(LEADING_ORDER_UNIT_PATTERN)
   if (unitPrefix) productName = productName.slice(unitPrefix[0].length).trimStart()
 
-  const requestedUnit = item.requestedUnit.trim() || unitPrefix?.[0] || ''
+  requestedUnit ||= unitPrefix?.[0] || ''
   return productName ? { ...item, rawName: productName, requestedUnit } : { ...item, rawName }
 }
 
@@ -136,8 +156,18 @@ export interface ResolvedBillLine {
     unitSource?: 'history' | 'history_quantity_pattern' | 'static_price' | 'global_reference' | 'business_override' | 'product_name' | 'positive_history' | 'implicit_each' | 'staff_confirmation' | 'chat_memory'
     rowDates: string[]
   }
-  candidates: Array<{ candidateId: string, sku: string, productName: string, reason: string }>
+  candidates: Array<{
+    candidateId: string
+    sku: string
+    productName: string
+    reason: string
+    unit?: string
+    unitPrice?: number
+    rowDate?: string
+  }>
   confirmations: Array<{ confirmationId: string, kind: 'unit' | 'price', label: string, reason: string }>
+  /** Reliable catalog price retained even while the unit/product line is pending. */
+  catalogPrice?: number
   resolved?: { quantity: number, unit: string, catalogPrice: number, unitPrice: number, lineTotal: number, unitConfirmed?: boolean }
   warning?: string
 }
@@ -148,6 +178,7 @@ export interface ResolvedOrderDraft {
   /** Provenance shown to staff when the branch came from chat memory. */
   customerNote?: string
   items: Array<{
+    lineId: string
     name: string
     sku?: string
     orderedQuantity: number
@@ -155,6 +186,9 @@ export interface ResolvedOrderDraft {
     quantity: number
     unit: string
     unitConfirmed?: boolean
+    catalogPrice?: number | null
+    candidates?: ResolvedBillLine['candidates']
+    confirmations?: ResolvedBillLine['confirmations']
     unitPrice: number | null
     lineTotal: number | null
     note?: string
@@ -376,6 +410,10 @@ const PRODUCT_TOKEN_SYNONYMS: Record<string, string> = {
   siro: 'syrup',
   // Frequent transposition typo in compact order messages: "srio" → "syrup".
   srio: 'syrup',
+  // Established catalog spelling aliases. These are explicit, not fuzzy edits.
+  puding: 'pudding',
+  richs: 'rich',
+  dinhfong: 'dingfong',
   // F&B shorthand: "bột béo" is the same catalog family as "bột sữa".
   beo: 'sua',
   // Staff/customer shorthand for the Flago creme-brulee powder variant.
@@ -455,13 +493,85 @@ function isOneEditApart(left: string, right: string): boolean {
   return true
 }
 
+function preservesAccentedFlavor(row: BillRow, rawName: string): boolean {
+  const query = rawName.toLocaleLowerCase('vi')
+  const product = row['Tên hàng'].toLocaleLowerCase('vi')
+  // Accent stripping makes "dừa" and "dứa" identical ("dua"). Preserve
+  // this flavor distinction whenever staff typed the accented word.
+  return !query.includes('dừa') || product.includes('dừa')
+}
+
 function productMatches(row: BillRow, rawName: string): boolean {
+  if (!preservesAccentedFlavor(row, rawName)) return false
   const queryTokens = productQueryTokens(rawName)
   if (queryTokens.length === 0) return false
   const haystackTokens = tokens(`${row['Tên hàng']} ${row['Mã hàng']}`).map(canonicalProductToken)
-  return queryTokens.every(queryToken =>
-    haystackTokens.some(productToken => isOneEditApart(queryToken, productToken)),
-  )
+  // Automatic resolution is exact after explicit business aliases. Typos and
+  // fuzzy shorthand belong to the confirmation-only candidate path below.
+  return queryTokens.every(queryToken => haystackTokens.includes(queryToken))
+}
+
+/**
+ * Conservative discovery for shorthand that the strict matcher cannot resolve.
+ * These matches are candidates only: they are never auto-selected, even when
+ * only one row matches. Accounting must confirm the exact resolver-issued SKU.
+ */
+function candidateProductQueryTokens(rawName: string): string[] {
+  let queryTokens = tokens(rawName).map(canonicalProductToken)
+  const has = (...required: string[]) => required.every(token => queryTokens.includes(token))
+
+  queryTokens = queryTokens.flatMap((token) => {
+    if (token === 'sr') return ['syrup']
+    if (token === 'frap') return ['frappe']
+    if (token === 'st') return ['sinh', 'to']
+    if (token === 'cafe') return ['ca', 'phe']
+    return [token]
+  })
+
+  if (queryTokens.includes('chu') && queryTokens.includes('ca') && queryTokens.includes('phe')) {
+    queryTokens = queryTokens.filter(token => token !== 'chu')
+  }
+  if (has('thach', 'tran', 'chau')) {
+    queryTokens = queryTokens.filter(token => token !== 'thach')
+  }
+  if (has('mut', 'cam', 'nha', 'dam')) {
+    queryTokens = queryTokens.flatMap(token => token === 'mut' ? ['sinh', 'to'] : [token])
+  }
+
+  return unique(queryTokens)
+}
+
+function candidateProductMatches(row: BillRow, rawName: string): boolean {
+  const queryTokens = candidateProductQueryTokens(rawName)
+  if (queryTokens.length === 0) return false
+  const nameTokens = tokens(row['Tên hàng']).map(canonicalProductToken)
+
+  if (!preservesAccentedFlavor(row, rawName)) return false
+
+  // "ly cao + nắp" / "ly thấp + nắp" is a bundle-like phrase. Surface the
+  // customer's exact cup and lid history for staff selection; never pick one.
+  if (queryTokens.includes('ly') && queryTokens.includes('nap')) {
+    return nameTokens[0] === 'ly' || nameTokens[0] === 'nap'
+  }
+  // Models sometimes split the same phrase into a quantity-bearing cup line
+  // plus a separate lid line. "cao"/"thấp" has no safe catalog-size mapping,
+  // so surface every exact cup from this customer's history for staff choice.
+  if (queryTokens.includes('ly') && (queryTokens.includes('cao') || queryTokens.includes('thap'))) {
+    return nameTokens[0] === 'ly'
+  }
+
+  // Each query token must consume a distinct product token. Without this,
+  // "trắng" and "trân" can both match the same "trân" token and surface a
+  // completely wrong product such as a trân-châu scoop.
+  const used = new Set<number>()
+  return queryTokens.every((queryToken) => {
+    const matchIndex = nameTokens.findIndex((productToken, index) =>
+      !used.has(index) && isOneEditApart(queryToken, productToken),
+    )
+    if (matchIndex === -1) return false
+    used.add(matchIndex)
+    return true
+  })
 }
 
 /**
@@ -535,6 +645,19 @@ function businessUnitOverride(productName: string): string | null {
   return BUSINESS_UNIT_OVERRIDES.find(override =>
     override.productTokens.every(token => normalized.includes(token)),
   )?.unit ?? null
+}
+
+/**
+ * Build a sized catalog unit only for an accounting confirmation. BILL.md's
+ * ĐVT remains authoritative; a size written in the product name is supporting
+ * evidence, never an automatic unit conversion.
+ */
+function sizedCatalogUnitFromProductName(productName: string, catalogUnit: string): string | null {
+  const matches = [...productName.matchAll(/(\d+(?:[.,]\d+)?)\s*(gram|gr|kg|ml|g|l)\b/giu)]
+  const measure = matches.at(-1)?.[0]
+  if (!measure) return null
+  const candidate = `${catalogUnit} ${measure}`
+  return parseSizedUnit(candidate).measureBase === null ? null : candidate
 }
 
 function unitVariantMatches(rawCatalogUnit: string, requestedUnit: string): boolean {
@@ -691,6 +814,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
 
   let candidateRows = historyMatches.length > 0 ? historyMatches : staticMatches
   let referenceMatches: BillRow[] = []
+  let requiresStaffProductConfirmation = false
   if (candidateRows.length === 0) {
     referenceMatches = narrowLeadingCategory(
       narrowFlavorVariant(
@@ -704,6 +828,20 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     )
     candidateRows = referenceMatches
   }
+  if (candidateRows.length === 0) {
+    const approximateHistory = historyScope.filter(row => candidateProductMatches(row, item.rawName))
+    const approximateStatic = staticScope.filter(row => candidateProductMatches(row, item.rawName))
+    const approximateReference = priceListReferenceScope.filter(row => candidateProductMatches(row, item.rawName))
+    candidateRows = approximateHistory.length > 0
+      ? approximateHistory
+      : approximateStatic.length > 0 ? approximateStatic : approximateReference
+    if (candidateRows.length > 0) {
+      historyMatches = approximateHistory
+      staticMatches = approximateHistory.length > 0 ? [] : approximateStatic
+      referenceMatches = approximateHistory.length > 0 || approximateStatic.length > 0 ? [] : approximateReference
+      requiresStaffProductConfirmation = true
+    }
+  }
   const usesPriceListReference = referenceMatches.length > 0
   const candidateGroups = new Map<string, BillRow[]>()
   for (const row of candidateRows) {
@@ -715,15 +853,31 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
 
   const candidates = [...candidateGroups.values()].map((rows) => {
     const newest = [...rows].sort((a, b) => parseDate(b['Thời gian']) - parseDate(a['Thời gian']))[0]!
+    const pricedRows = newestPricedRows(rows)
+    const prices = unique(pricedRows.map(row => parseNumber(row['Giá bán'])).filter((value): value is number => value !== null && value > 0))
+    const unitRow = [...rows]
+      .sort((a, b) => parseDate(b['Thời gian']) - parseDate(a['Thời gian']))
+      .find(row => isValidCatalogUnit(row['ĐVT']))
+    const unit = unitRow ? catalogUnitForBilling(unitRow['ĐVT']) : undefined
+    const unitPrice = prices.length === 1 ? prices[0] : undefined
+    const rowDate = pricedRows[0]?.['Thời gian'] ?? newest['Thời gian']
+    const evidence = [
+      unit ? `ĐVT ${unit}` : 'ĐVT chưa rõ',
+      unitPrice !== undefined ? `giá ${unitPrice.toLocaleString('vi-VN')}đ` : 'giá chưa rõ',
+      `ngày ${rowDate}`,
+    ].join(', ')
     return {
       candidateId: productCandidateId(item.lineId, newest['Tên hàng']),
       sku: newest['Mã hàng'],
       productName: newest['Tên hàng'],
       reason: historyMatches.length > 0
-        ? 'Có trong lịch sử mua thực của khách hàng'
+        ? `Có trong lịch sử mua thực của khách hàng (${evidence})`
         : usesPriceListReference
-          ? 'Mặt hàng mới: có trong cùng bảng giá nhưng khách chưa từng mua'
-          : 'Chỉ có trong bảng giá tĩnh',
+          ? `Mặt hàng mới: có trong cùng bảng giá nhưng khách chưa từng mua (${evidence})`
+          : `Chỉ có trong bảng giá tĩnh (${evidence})`,
+      ...(unit ? { unit } : {}),
+      ...(unitPrice !== undefined ? { unitPrice } : {}),
+      ...(rowDate ? { rowDate } : {}),
     }
   })
 
@@ -736,21 +890,21 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
       selectionSource = 'staff_confirmation'
     }
   }
-  if (!selectedProduct && candidateGroups.size === 1 && !usesPriceListReference) {
+  if (!selectedProduct && candidateGroups.size === 1 && !usesPriceListReference && !requiresStaffProductConfirmation) {
     selectedProduct = candidates[0]!.productName
     selectionSource = aliasApplied
       ? 'chat_memory'
       : historyMatches.length > 0 ? 'positive_history' : 'static_price'
     if (aliasApplied) usedChatMemory = true
   }
-  if (!selectedProduct && !usesPriceListReference) {
+  if (!selectedProduct && !usesPriceListReference && !requiresStaffProductConfirmation) {
     const exact = candidates.filter(candidate => normalizeBillText(candidate.productName) === normalizeBillText(item.rawName))
     if (exact.length === 1) {
       selectedProduct = exact[0]!.productName
       selectionSource = historyMatches.length > 0 ? 'positive_history' : 'static_price'
     }
   }
-  if (!selectedProduct && historyMatches.length > 0 && candidateGroups.size > 1) {
+  if (!selectedProduct && historyMatches.length > 0 && candidateGroups.size > 1 && !requiresStaffProductConfirmation) {
     const newestCandidateTimestamp = Math.max(...historyMatches.map(row => parseDate(row['Thời gian'])))
     const recentCutoff = newestCandidateTimestamp - 30 * 24 * 60 * 60 * 1000
     const ranked = [...candidateGroups.values()]
@@ -969,6 +1123,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     },
     candidates,
     confirmations,
+    ...(price !== null ? { catalogPrice: price } : {}),
   }
 
   if (price === null || priceNeedsConfirmation) {
@@ -983,7 +1138,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     return finalize({ ...base, status: 'needs_unit_confirmation', warning: `Cần xác nhận ĐVT cho ${selectedProduct}` })
   }
 
-  const calculated = resolveOrderLine({
+  let calculated = resolveOrderLine({
     productName: selectedProduct,
     catalogUnit: unit,
     catalogPrice: price,
@@ -991,6 +1146,43 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     // Staff confirmed 1 requested unit = 1 catalog unit → bill in the catalog unit.
     requestedUnit: unitMappedByStaff || unitMappedByHistory ? undefined : item.requestedUnit,
   })
+  let measureMappedByStaff = false
+  if (!calculated.ok) {
+    const productSizedUnit = item.requestedUnit.trim()
+      ? sizedCatalogUnitFromProductName(selectedProduct, unit)
+      : null
+    const measureCalculation = productSizedUnit
+      ? resolveOrderLine({
+        productName: selectedProduct,
+        catalogUnit: productSizedUnit,
+        catalogPrice: price,
+        requestedQuantity: item.requestedQuantity,
+        requestedUnit: item.requestedUnit,
+      })
+      : null
+    const measureConfirmationId = `unit:${encodeURIComponent(item.lineId)}:requested-measure-to-catalog`
+    if (calculated.reason === 'unit_mismatch' && measureCalculation?.ok) {
+      if (!confirmedIds.has(measureConfirmationId)) {
+        const historyDate = base.evidence.rowDates[0] ?? 'không rõ ngày'
+        return finalize({
+          ...base,
+          status: 'needs_unit_confirmation',
+          confirmations: [
+            ...base.confirmations,
+            {
+              confirmationId: measureConfirmationId,
+              kind: 'unit' as const,
+              label: `Xác nhận ${item.requestedQuantity}${item.requestedUnit} = ${measureCalculation.quantity} ${unit}: ${selectedProduct} — ${price.toLocaleString('vi-VN')}đ/${unit}`,
+              reason: `BILL.md ghi ĐVT "${unit}", tên hàng ghi quy cách ${productSizedUnit}; giá lịch sử ${price.toLocaleString('vi-VN')}đ ngày ${historyDate}`,
+            },
+          ],
+          warning: `Cần kế toán xác nhận quy đổi ${item.requestedQuantity}${item.requestedUnit} theo quy cách ghi trong tên hàng (${productSizedUnit})`,
+        })
+      }
+      calculated = { ...measureCalculation, unit }
+      measureMappedByStaff = true
+    }
+  }
   if (!calculated.ok) {
     // A fractional pack ("5 Hộp" of "Thùng/24 Hộp") must never be offered as a
     // 1:1 mapping — that would bill 5 thùng. Only an unknown unit is mappable.
@@ -1018,7 +1210,7 @@ function resolveLine(index: BillIndex, item: RequestedOrderItem, options: {
     catalogPrice: price,
     unitPrice: calculated.unitPrice,
     lineTotal: calculated.lineTotal,
-    ...(unitMappedByStaff ? { unitConfirmed: true } : {}),
+    ...(unitMappedByStaff || measureMappedByStaff ? { unitConfirmed: true } : {}),
   }
 
   if (/cập\s*nhật\s*-?\s*báo\s*khách/i.test(flags)) {
@@ -1255,6 +1447,7 @@ export function resolveBillOrder(index: BillIndex, request: ResolveBillOrderRequ
   const draftItems = lines.map((line) => {
     const { resolved } = line
     return {
+      lineId: line.lineId,
       name: line.matched?.productName ?? line.request.rawName,
       ...(line.matched?.sku ? { sku: line.matched.sku } : {}),
       orderedQuantity: line.request.requestedQuantity,
@@ -1262,8 +1455,15 @@ export function resolveBillOrder(index: BillIndex, request: ResolveBillOrderRequ
       quantity: resolved?.quantity ?? 0,
       unit: resolved?.unit ?? '',
       ...(resolved?.unitConfirmed ? { unitConfirmed: true } : {}),
+      ...(line.catalogPrice !== undefined ? { catalogPrice: line.catalogPrice } : {}),
       unitPrice: resolved?.unitPrice ?? null,
       lineTotal: resolved?.lineTotal ?? null,
+      ...(line.status === 'needs_product_confirmation' && line.candidates.length > 0
+        ? { candidates: line.candidates }
+        : {}),
+      ...(line.status !== 'resolved' && line.confirmations.length > 0
+        ? { confirmations: line.confirmations }
+        : {}),
       ...(line.warning ? { note: line.warning } : {}),
     }
   })

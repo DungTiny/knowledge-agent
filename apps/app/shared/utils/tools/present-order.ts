@@ -10,6 +10,7 @@ export type PresentOrderUIToolInvocation = UIToolInvocation<typeof presentOrderT
 export type LoadStoredOrderDraft = (draftId: string) => Promise<OrderDraft | null>
 
 const orderItemSchema = z.object({
+  lineId: z.string().optional().describe('Stable line id from resolve_bill_order'),
   name: z.string().describe('Standardized product name (from the catalog/history), not the customer\'s abbreviation'),
   sku: z.string().optional().describe('Product code (Mã hàng), if resolved'),
   orderedQuantity: z.number().optional().describe('Quantity exactly as the customer requested, e.g. 12 for "12 hộp". Omit only when the customer ordered in the catalog unit'),
@@ -17,10 +18,25 @@ const orderItemSchema = z.object({
   quantity: z.number().describe('Billed quantity in catalog ĐVT units — may be fractional, e.g. 0.5 for 12 hộp of a "Thùng/24 Hộp" product. Recomputed server-side from orderedQuantity/orderedUnit when provided. Use 0 for a pending line whose billed quantity is unknown — the card then shows orderedQuantity instead'),
   unit: z.string().describe('Catalog unit of measure (ĐVT) exactly as written in the price list, e.g. "Chai", "Hộp", "Thùng/24 Hộp"'),
   unitConfirmed: z.boolean().optional().describe('Staff confirmed 1 orderedUnit = 1 catalog unit (e.g. 1 bì = 1 Gói). Copy it verbatim from the resolver orderDraft; never set it yourself'),
-  catalogPrice: z.number().optional().describe('Known catalog price retained from a previously pending unit mismatch. Copy it when revising that line so the server can restore its price after confirmation.'),
+  catalogPrice: z.number().nullable().optional().describe('Known catalog price retained from a pending line. Null/omit when the resolver has no reliable price.'),
   unitPrice: z.number().nullable().optional().describe('Giá bán for ONE catalog unit (never per sub-unit), null/omitted if this line is not yet resolved'),
   lineTotal: z.number().nullable().optional().describe('quantity * unitPrice — recomputed server-side, null/omitted if not yet resolved'),
   note: z.string().optional().describe('Reason the line is pending (e.g. "⚠️ Cần xác nhận loại") or other remark'),
+  candidates: z.array(z.object({
+    candidateId: z.string(),
+    sku: z.string(),
+    productName: z.string(),
+    reason: z.string(),
+    unit: z.string().optional(),
+    unitPrice: z.number().optional(),
+    rowDate: z.string().optional(),
+  })).optional().describe('Exact resolver-issued product candidates for staff confirmation'),
+  confirmations: z.array(z.object({
+    confirmationId: z.string(),
+    kind: z.enum(['unit', 'price']),
+    label: z.string(),
+    reason: z.string(),
+  })).optional().describe('Exact resolver-issued unit/price confirmations'),
 })
 
 export const presentOrderInputSchema = z.object({
@@ -47,7 +63,9 @@ export function createPresentOrderTool(loadStoredDraft?: LoadStoredOrderDraft) {
         if (!stored) {
           throw new Error(`Order draft not found or expired: ${draftId} — call resolve_bill_order again and present its new orderDraft`)
         }
-        return normalizeOrder(stored)
+        // The resolver already validated units, conversions, prices and totals.
+        // Rendering must never re-resolve or mutate that authoritative draft.
+        return stored
       }
       return normalizeOrder({
         ...input,
