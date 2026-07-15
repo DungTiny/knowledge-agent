@@ -24,16 +24,11 @@ useHead({
   titleTemplate: `%s - ${appConfig.app.name}`
 })
 
-const ogImage = `${useRequestURL().origin}/og.jpg`
-
 useSeoMeta({
   title: appConfig.app.name,
   description: appConfig.app.description,
   ogTitle: appConfig.app.name,
   ogDescription: appConfig.app.description,
-  ogImage,
-  twitterImage: ogImage,
-  twitterCard: 'summary_large_image',
 })
 </script>
 

@@ -6,16 +6,11 @@ const appConfig = useAppConfig()
 
 definePageMeta({ layout: false, auth: 'guest' })
 
-const ogImage = `${useRequestURL().origin}/og.jpg`
-
 useSeoMeta({
   title: 'Sign in',
   description: appConfig.app.description,
   ogTitle: appConfig.app.name,
   ogDescription: appConfig.app.description,
-  ogImage,
-  twitterImage: ogImage,
-  twitterCard: 'summary_large_image',
 })
 
 const route = useRoute()
