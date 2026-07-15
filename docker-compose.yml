@@ -2,7 +2,7 @@ services:
   app_moctra:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: apps/app/Dockerfile
     container_name: knowledge_agent
     ports:
       - "3555:3555"
