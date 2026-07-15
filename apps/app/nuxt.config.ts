@@ -103,7 +103,8 @@ export default defineNuxtConfig({
     experimental: {
       asyncContext: true,
       openAPI: true
-    }
+    },
+    preset: 'vercel',
   },
 
   hub: {
