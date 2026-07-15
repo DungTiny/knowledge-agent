@@ -40,6 +40,13 @@ function resolveCustomLanguageModel(modelId: string): Promise<LanguageModelV3 | 
   return getCustomChatModel()
 }
 
+// User (non-admin) chat: force the custom (vilao) provider for EVERY message,
+// ignoring the complexity router's chosen model tier. Returns undefined only when
+// the custom provider is not configured, so the agent still falls back to base models.
+function forceCustomLanguageModel(): Promise<LanguageModelV3 | undefined> | undefined {
+  return getCustomChatModel()
+}
+
 function hasOrderToolHistory(messages: UIMessage[]): boolean {
   return messages.some(message => message.parts.some((part) => {
     const { type } = part as { type?: string }
@@ -154,7 +161,7 @@ export default defineEventHandler(async (event) => {
         messages,
         defaultModel: model,
         requestId,
-        getLanguageModel: resolveCustomLanguageModel,
+        getLanguageModel: forceCustomLanguageModel,
         getRouterModel: getCustomChatModel,
         onRouted: ({ routerConfig, agentConfig, effectiveModel: routedModel, effectiveMaxSteps }) => {
           effectiveModel = routedModel

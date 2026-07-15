@@ -7,5 +7,6 @@ import { getModelProviderConfig, isModelProviderConfigured } from '../../utils/m
 export default defineEventHandler(async (event) => {
   await requireUserSession(event)
   const config = await getModelProviderConfig()
-  return { available: isModelProviderConfigured(config), label: config.label }
+  // Chat always shows the custom provider as "AI" regardless of the admin label.
+  return { available: isModelProviderConfigured(config), label: 'AI' }
 })
